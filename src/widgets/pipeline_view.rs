@@ -84,10 +84,15 @@ impl PipelineViewState {
     }
 
     pub fn set_loading(&mut self, sha: Option<String>) {
+        let sha_changed = self.current_sha != sha;
+        if sha_changed {
+            self.details = None;
+            self.selected_stage = 0;
+            self.selected_job = 0;
+        }
         self.current_sha = sha;
         self.loading = true;
         self.error = None;
-        self.details = None;
     }
 
     pub fn apply_cached(&mut self, sha: &str, cached: &CachedPipeline) {

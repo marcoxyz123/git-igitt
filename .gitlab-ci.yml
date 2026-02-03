@@ -96,6 +96,8 @@ build:macos-amd64:
   tags:
     - macOS
   extends: .rust_cache
+  before_script:
+    - source "$HOME/.cargo/env" || true
   script:
     - cargo build --release --locked
     - strip target/release/${PACKAGE_NAME}
@@ -112,6 +114,8 @@ build:macos-arm64:
   tags:
     - macOS
   extends: .rust_cache
+  before_script:
+    - source "$HOME/.cargo/env" || true
   script:
     - cargo build --release --locked
     - strip target/release/${PACKAGE_NAME}

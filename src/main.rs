@@ -43,6 +43,7 @@ use std::{
 const REPO_CONFIG_FILE: &str = "git-graph.toml";
 const CHECK_CHANGE_RATE: u64 = 2000;
 const PIPELINE_REFRESH_RATE: u64 = 5000;
+const ANIMATION_TICK_RATE: u64 = 50;
 const INITIAL_KEY_REPEAT_TIME: u128 = 100;
 const MIN_KEY_REPEAT_TIME: u128 = 50;
 
@@ -479,6 +480,7 @@ fn run(
 
     let repo_refresh_interval = Duration::from_millis(CHECK_CHANGE_RATE);
     let pipeline_refresh_interval = Duration::from_millis(PIPELINE_REFRESH_RATE);
+    let animation_interval = Duration::from_millis(ANIMATION_TICK_RATE);
 
     let (pipeline_request_tx, pipeline_request_rx) = mpsc::channel::<PipelineRequest>();
     let (pipeline_response_tx, pipeline_response_rx) = mpsc::channel::<PipelineResponse>();
@@ -526,6 +528,7 @@ fn run(
 
     let next_repo_refresh = &Cell::new(Instant::now() + repo_refresh_interval);
     let next_pipeline_refresh: &Cell<Option<Instant>> = &Cell::new(None);
+    let next_animation_tick = &Cell::new(Instant::now() + animation_interval);
     let next_diff_update: &Cell<Option<Instant>> = &Cell::new(None);
     let next_file_update: &Cell<Option<Instant>> = &Cell::new(None);
     let mut reset_diff_scroll = false;
@@ -536,6 +539,7 @@ fn run(
 
         move || loop {
             let mut next_event_time = next_repo_refresh.get();
+            next_event_time = next_event_time.min(next_animation_tick.get());
             if let Some(next) = next_pipeline_refresh.get() {
                 next_event_time = next.min(next_event_time)
             }
@@ -856,9 +860,12 @@ fn run(
                     Event::Update => {
                         let now = Instant::now();
 
-                        app.tick_animation();
-                        app.graph_state.animation_tick = app.animation_tick;
-                        app.pipeline_state.animation_tick = app.animation_tick;
+                        if next_animation_tick.get() <= now {
+                            app.tick_animation();
+                            app.graph_state.animation_tick = app.animation_tick;
+                            app.pipeline_state.animation_tick = app.animation_tick;
+                            next_animation_tick.set(now + animation_interval);
+                        }
 
                         if next_repo_refresh.get() <= now {
                             if app.graph_state.graph.is_some() && has_changed(&mut app)? {
