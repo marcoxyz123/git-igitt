@@ -1,9 +1,9 @@
 use crate::widgets::list::{ListItem, ListState};
-use tui::buffer::Buffer;
-use tui::layout::{Corner, Rect};
-use tui::style::Style;
-use tui::text::Span;
-use tui::widgets::{Block, StatefulWidget, Widget};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::Span;
+use ratatui::widgets::{Block, StatefulWidget, Widget};
 use unicode_width::UnicodeWidthStr;
 
 const SCROLL_MARGIN: usize = 2;
@@ -83,7 +83,6 @@ pub struct BranchList<'a> {
     block: Option<Block<'a>>,
     items: Vec<BranchListItem<'a>>,
     style: Style,
-    start_corner: Corner,
     /// Style used to render selected item
     highlight_style: Style,
     /// Symbol in front of the selected item (Shift all items to the right)
@@ -99,7 +98,6 @@ impl<'a> BranchList<'a> {
             block: None,
             style: Style::default(),
             items: items.into(),
-            start_corner: Corner::TopLeft,
             highlight_style: Style::default(),
             highlight_symbol: None,
         }
@@ -122,11 +120,6 @@ impl<'a> BranchList<'a> {
 
     pub fn highlight_style(mut self, style: Style) -> BranchList<'a> {
         self.highlight_style = style;
-        self
-    }
-
-    pub fn start_corner(mut self, corner: Corner) -> BranchList<'a> {
-        self.start_corner = corner;
         self
     }
 }
@@ -179,25 +172,15 @@ impl StatefulWidget for BranchList<'_> {
         let blank_symbol = " ".repeat(highlight_symbol.width());
 
         let mut max_scroll = 0;
-        let mut current_height = 0;
-        for (i, item) in self
+        for (current_height, (i, item)) in self
             .items
             .iter_mut()
             .enumerate()
             .skip(state.offset)
             .take(end - start)
+            .enumerate()
         {
-            let (x, y) = match self.start_corner {
-                Corner::BottomLeft => {
-                    current_height += 1;
-                    (list_area.left(), list_area.bottom() - current_height)
-                }
-                _ => {
-                    let pos = (list_area.left(), list_area.top() + current_height);
-                    current_height += 1;
-                    pos
-                }
-            };
+            let (x, y) = (list_area.left(), list_area.top() + current_height as u16);
             let area = Rect {
                 x,
                 y,

@@ -1,6 +1,9 @@
 pub mod app;
 pub mod dialogs;
+pub mod gitlab;
+pub mod gitlab_config;
 pub mod settings;
+pub mod theme;
 pub mod ui;
 pub mod util;
 pub mod widgets;

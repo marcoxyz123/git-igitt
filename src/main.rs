@@ -16,14 +16,21 @@ use git_graph::{
     },
 };
 use git_igitt::app::DiffMode;
+use git_igitt::gitlab::GitLabClient;
 use git_igitt::settings::AppSettings;
 use git_igitt::{
-    app::{ActiveView, App, CurrentBranches},
+    app::{
+        ActiveView, App, CurrentBranches, JobLogRequest, JobLogResponse, PipelineRequest,
+        PipelineResponse, DEFAULT_PIPELINE_LOAD_LIMIT,
+    },
     dialogs::FileDialog,
     ui,
 };
 use platform_dirs::AppDirs;
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::cell::Cell;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Instant;
 use std::{
     error::Error,
@@ -32,10 +39,13 @@ use std::{
     str::FromStr,
     time::Duration,
 };
-use tui::{backend::CrosstermBackend, Terminal};
 
 const REPO_CONFIG_FILE: &str = "git-graph.toml";
 const CHECK_CHANGE_RATE: u64 = 2000;
+const PIPELINE_REFRESH_RATE: u64 = 3000;
+const ANIMATION_TICK_RATE: u64 = 50;
+const JOB_LOG_REFRESH_RATE: u64 = 1000;
+const HEAD_PIPELINE_RECHECK_RATE: u64 = 5000;
 const INITIAL_KEY_REPEAT_TIME: u128 = 100;
 const MIN_KEY_REPEAT_TIME: u128 = 50;
 
@@ -273,6 +283,14 @@ fn from_args() -> Result<(), String> {
                 .required(false)
                 .num_args(1),
         )
+        .arg(
+            Arg::new("pipeline-load-limit")
+                .long("pipeline-load-limit")
+                .help("Maximum number of commits to load pipeline status for. Default: 1000.")
+                .required(false)
+                .num_args(1)
+                .value_name("count"),
+        )
         .subcommand(Command::new("model")
             .about("Prints or permanently sets the branching model for a repository.")
             .arg(
@@ -353,6 +371,19 @@ fn from_args() -> Result<(), String> {
         },
     };
 
+    let pipeline_load_limit = match matches.get_one::<String>("pipeline-load-limit") {
+        None => DEFAULT_PIPELINE_LOAD_LIMIT,
+        Some(str) => match str.parse::<usize>() {
+            Ok(val) => val,
+            Err(_) => {
+                return Err(format![
+                    "Option pipeline-load-limit must be a positive number, but got '{}'",
+                    str
+                ])
+            }
+        },
+    };
+
     let include_remote = !matches.get_flag("local");
     let reverse_commit_order = matches.get_flag("reverse");
 
@@ -426,6 +457,7 @@ fn from_args() -> Result<(), String> {
         app_settings,
         model.map(|x| &**x),
         commit_limit,
+        pipeline_load_limit,
     )
     .map_err(|err| err.to_string())?;
 
@@ -438,6 +470,7 @@ fn run(
     app_settings: AppSettings,
     model: Option<&str>,
     max_commits: Option<usize>,
+    pipeline_load_limit: usize,
 ) -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
 
@@ -448,6 +481,50 @@ fn run(
     let mut terminal = Terminal::new(backend)?;
 
     let repo_refresh_interval = Duration::from_millis(CHECK_CHANGE_RATE);
+    let pipeline_refresh_interval = Duration::from_millis(PIPELINE_REFRESH_RATE);
+    let animation_interval = Duration::from_millis(ANIMATION_TICK_RATE);
+
+    let (pipeline_request_tx, pipeline_request_rx) = mpsc::channel::<PipelineRequest>();
+    let (pipeline_response_tx, pipeline_response_rx) = mpsc::channel::<PipelineResponse>();
+
+    let batch_response_tx = pipeline_response_tx.clone();
+    thread::spawn(move || {
+        while let Ok(req) = pipeline_request_rx.recv() {
+            let result = GitLabClient::new(&req.base_url, &req.token)
+                .and_then(|client| client.get_pipeline_details(&req.project_id, &req.sha));
+            let _ = batch_response_tx.send(PipelineResponse {
+                sha: req.sha,
+                result,
+            });
+        }
+    });
+
+    let (head_pipeline_tx, head_pipeline_rx) = mpsc::channel::<PipelineRequest>();
+    thread::spawn(move || {
+        while let Ok(req) = head_pipeline_rx.recv() {
+            let result = GitLabClient::new(&req.base_url, &req.token)
+                .and_then(|client| client.get_pipeline_details(&req.project_id, &req.sha));
+            let _ = pipeline_response_tx.send(PipelineResponse {
+                sha: req.sha,
+                result,
+            });
+        }
+    });
+
+    let (job_log_request_tx, job_log_request_rx) = mpsc::channel::<JobLogRequest>();
+    let (job_log_response_tx, job_log_response_rx) = mpsc::channel::<JobLogResponse>();
+
+    thread::spawn(move || {
+        while let Ok(req) = job_log_request_rx.recv() {
+            let result = GitLabClient::new(&req.base_url, &req.token)
+                .and_then(|client| client.get_job_trace(&req.project_id, req.job_id));
+            let _ = job_log_response_tx.send(JobLogResponse {
+                job_id: req.job_id,
+                job_name: req.job_name,
+                result,
+            });
+        }
+    });
 
     let mut file_dialog =
         FileDialog::new("Open repository", settings.colored).map_err(|err| err.to_string())?;
@@ -469,19 +546,24 @@ fn run(
         if repository.is_shallow() {
             None
         } else {
-            Some(create_app(
-                repository,
-                &mut settings,
-                &app_settings,
-                model,
-                max_commits,
-            )?)
+            let mut app = create_app(repository, &mut settings, &app_settings, model, max_commits)?;
+            app.pipeline_load_limit = pipeline_load_limit;
+            app.set_pipeline_channel(pipeline_request_tx.clone());
+            app.set_head_pipeline_channel(head_pipeline_tx.clone());
+            app.set_job_log_channel(job_log_request_tx.clone());
+            app.request_batch_pipelines();
+            Some(app)
         }
     } else {
         None
     };
 
     let next_repo_refresh = &Cell::new(Instant::now() + repo_refresh_interval);
+    let next_pipeline_refresh: &Cell<Option<Instant>> = &Cell::new(None);
+    let next_job_log_refresh: &Cell<Option<Instant>> = &Cell::new(None);
+    let next_head_recheck =
+        &Cell::new(Instant::now() + Duration::from_millis(HEAD_PIPELINE_RECHECK_RATE));
+    let next_animation_tick = &Cell::new(Instant::now() + animation_interval);
     let next_diff_update: &Cell<Option<Instant>> = &Cell::new(None);
     let next_file_update: &Cell<Option<Instant>> = &Cell::new(None);
     let mut reset_diff_scroll = false;
@@ -492,6 +574,14 @@ fn run(
 
         move || loop {
             let mut next_event_time = next_repo_refresh.get();
+            next_event_time = next_event_time.min(next_animation_tick.get());
+            if let Some(next) = next_pipeline_refresh.get() {
+                next_event_time = next.min(next_event_time)
+            }
+            if let Some(next) = next_job_log_refresh.get() {
+                next_event_time = next.min(next_event_time)
+            }
+            next_event_time = next_event_time.min(next_head_recheck.get());
             if let Some(next) = next_diff_update.get() {
                 next_event_time = next.min(next_event_time)
             }
@@ -549,7 +639,65 @@ fn run(
             let mut reload_diffs = false;
             let mut reload_file = false;
             let mut reset_scroll = true;
-            if app.active_view == ActiveView::Search {
+            if app.active_view == ActiveView::GitLabConfig {
+                if let Event::Input(event) = next_event() {
+                    match event.code {
+                        KeyCode::Char(c) => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.insert_char(c);
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.delete_char();
+                            }
+                        }
+                        KeyCode::Delete => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.delete_forward();
+                            }
+                        }
+                        KeyCode::Left => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_left();
+                            }
+                        }
+                        KeyCode::Right => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_right();
+                            }
+                        }
+                        KeyCode::Home => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_home();
+                            }
+                        }
+                        KeyCode::End => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_end();
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(dialog) = &app.gitlab_config_dialog {
+                                if dialog.is_valid() {
+                                    if let Err(err) = app.save_gitlab_config() {
+                                        app.set_error(err);
+                                    } else {
+                                        app.show_pipeline = true;
+                                        app.request_pipeline();
+                                    }
+                                } else {
+                                    app.set_error("Please enter an access token".to_string());
+                                }
+                            }
+                        }
+                        KeyCode::Esc => {
+                            app.close_gitlab_config();
+                        }
+                        _ => {}
+                    }
+                }
+            } else if app.active_view == ActiveView::Search {
                 if let Event::Input(event) = next_event() {
                     match event.code {
                         KeyCode::Char(c) => app.character_entered(c),
@@ -598,10 +746,16 @@ fn run(
                                     }
                                 }
                             },
-                            KeyCode::Char('r') => app = app.reload(&settings, max_commits)?,
+                            KeyCode::Char('r') => {
+                                app = app.reload(&settings, max_commits)?;
+                                app.request_batch_pipelines();
+                            }
                             KeyCode::Char('l') => {
                                 if event.modifiers.contains(KeyModifiers::CONTROL) {
                                     app.toggle_line_numbers()?;
+                                } else if app.active_view == ActiveView::Pipeline {
+                                    app.pipeline_state.job_log_focused =
+                                        !app.pipeline_state.job_log_focused;
                                 } else {
                                     app.toggle_layout();
                                 }
@@ -609,6 +763,25 @@ fn run(
                             KeyCode::Char('w') => {
                                 if event.modifiers.contains(KeyModifiers::CONTROL) {
                                     app.toggle_line_wrap()?;
+                                }
+                            }
+                            KeyCode::Char('c') => {
+                                if app.active_view == ActiveView::Pipeline
+                                    && app.pipeline_state.job_log_focused
+                                    && !app.pipeline_state.job_log.is_empty()
+                                {
+                                    let text = app.pipeline_state.job_log_as_text();
+                                    if let Ok(mut child) = std::process::Command::new("pbcopy")
+                                        .stdin(std::process::Stdio::piped())
+                                        .spawn()
+                                    {
+                                        if let Some(stdin) = child.stdin.take() {
+                                            use std::io::Write;
+                                            let mut stdin = stdin;
+                                            let _ = stdin.write_all(text.as_bytes());
+                                        }
+                                        let _ = child.wait();
+                                    }
                                 }
                             }
                             KeyCode::Char('b') => app.toggle_branches(),
@@ -671,6 +844,25 @@ fn run(
                                     if let Err(err) = result {
                                         app.set_error(err);
                                         app.active_view = ActiveView::Graph;
+                                    }
+                                } else {
+                                    app.toggle_pipeline();
+                                    if app.show_pipeline {
+                                        app.request_job_log();
+                                        if app.pipeline_state.is_running() {
+                                            next_pipeline_refresh.set(Some(
+                                                Instant::now() + pipeline_refresh_interval,
+                                            ));
+                                        }
+                                        if app.pipeline_state.selected_job_is_running() {
+                                            next_job_log_refresh.set(Some(
+                                                Instant::now()
+                                                    + Duration::from_millis(JOB_LOG_REFRESH_RATE),
+                                            ));
+                                        }
+                                    } else {
+                                        next_pipeline_refresh.set(None);
+                                        next_job_log_refresh.set(None);
                                     }
                                 }
                             }
@@ -739,11 +931,79 @@ fn run(
                     }
                     Event::Update => {
                         let now = Instant::now();
+
+                        if next_animation_tick.get() <= now {
+                            app.tick_animation();
+                            app.graph_state.animation_tick = app.animation_tick;
+                            app.pipeline_state.animation_tick = app.animation_tick;
+                            next_animation_tick.set(now + animation_interval);
+                        }
+
                         if next_repo_refresh.get() <= now {
                             if app.graph_state.graph.is_some() && has_changed(&mut app)? {
                                 app = app.reload(&settings, max_commits)?;
+                                app.request_batch_pipelines();
                             }
                             next_repo_refresh.set(now + repo_refresh_interval);
+                        }
+                        if next_head_recheck.get() <= now {
+                            app.recheck_head_pipeline();
+                            next_head_recheck
+                                .set(now + Duration::from_millis(HEAD_PIPELINE_RECHECK_RATE));
+                        }
+                        while let Ok(response) = pipeline_response_rx.try_recv() {
+                            let prev_job_id = app.pipeline_state.get_selected_job_id();
+                            app.handle_pipeline_response(response);
+                            if !app.show_pipeline && app.has_running_pipeline_on_head() {
+                                let _ = app.select_head();
+                                app.show_pipeline = true;
+                                app.active_view = ActiveView::Pipeline;
+                                app.request_pipeline();
+                            }
+                            if app.pipeline_state.is_running() {
+                                next_pipeline_refresh.set(Some(now + pipeline_refresh_interval));
+                            }
+                            let new_job_id = app.pipeline_state.get_selected_job_id();
+                            if app.show_pipeline && prev_job_id != new_job_id {
+                                app.request_job_log();
+                                if app.pipeline_state.selected_job_is_running() {
+                                    next_job_log_refresh.set(Some(
+                                        now + Duration::from_millis(JOB_LOG_REFRESH_RATE),
+                                    ));
+                                }
+                            }
+                        }
+                        while let Ok(response) = job_log_response_rx.try_recv() {
+                            app.handle_job_log_response(response);
+                            if app.pipeline_state.selected_job_is_running() {
+                                next_job_log_refresh
+                                    .set(Some(now + Duration::from_millis(JOB_LOG_REFRESH_RATE)));
+                            }
+                        }
+                        if let Some(next) = next_pipeline_refresh.get() {
+                            if next <= now {
+                                if app.show_pipeline && app.pipeline_state.is_running() {
+                                    app.invalidate_current_pipeline();
+                                    app.request_pipeline();
+                                    next_pipeline_refresh
+                                        .set(Some(now + pipeline_refresh_interval));
+                                } else {
+                                    next_pipeline_refresh.set(None);
+                                }
+                            }
+                        }
+                        if let Some(next) = next_job_log_refresh.get() {
+                            if next <= now {
+                                if app.show_pipeline && app.pipeline_state.selected_job_is_running()
+                                {
+                                    app.request_job_log();
+                                    next_job_log_refresh.set(Some(
+                                        now + Duration::from_millis(JOB_LOG_REFRESH_RATE),
+                                    ));
+                                } else {
+                                    next_job_log_refresh.set(None);
+                                }
+                            }
                         }
                         if let Some(next) = next_diff_update.get() {
                             if next <= now {
@@ -765,6 +1025,9 @@ fn run(
                 next_diff_update.set(Some(
                     Instant::now() + Duration::from_millis(2 * key_repeat_time as u64),
                 ));
+                if app.show_pipeline {
+                    app.request_pipeline();
+                }
             }
             if reload_file {
                 if reset_scroll {
@@ -793,8 +1056,8 @@ fn run(
 
             let mut app = None;
             if file_dialog.error_message.is_some() {
-                if let Event::Input(event) = next_event() {
-                    match event.code {
+                match next_event() {
+                    Event::Input(event) => match event.code {
                         KeyCode::Enter | KeyCode::Esc => {
                             file_dialog.clear_error();
                         }
@@ -805,61 +1068,86 @@ fn run(
                             break;
                         }
                         _ => {}
+                    },
+                    Event::Update => {
+                        let now = Instant::now();
+                        if next_repo_refresh.get() <= now {
+                            next_repo_refresh.set(now + repo_refresh_interval);
+                        }
                     }
                 }
-            } else if let Event::Input(event) = next_event() {
-                match event.code {
-                    KeyCode::Char('q') => {
-                        disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                        terminal.show_cursor()?;
-                        break;
-                    }
-                    KeyCode::Char('o') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if let Some(prev_app) = file_dialog.previous_app.take() {
-                            app = Some(prev_app);
-                        } else {
-                            file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+            } else {
+                match next_event() {
+                    Event::Input(event) => match event.code {
+                        KeyCode::Char('q') => {
+                            disable_raw_mode()?;
+                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                            terminal.show_cursor()?;
+                            break;
                         }
-                    }
-                    KeyCode::Esc => {
-                        if let Some(prev_app) = file_dialog.previous_app.take() {
-                            app = Some(prev_app);
-                        } else {
-                            file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+                        KeyCode::Char('o') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            if let Some(prev_app) = file_dialog.previous_app.take() {
+                                app = Some(prev_app);
+                            } else {
+                                file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+                            }
                         }
-                    }
-                    KeyCode::Up => file_dialog.on_up(event.modifiers.contains(KeyModifiers::SHIFT)),
-                    KeyCode::Down => {
-                        file_dialog.on_down(event.modifiers.contains(KeyModifiers::SHIFT))
-                    }
-                    KeyCode::Left => file_dialog.on_left()?,
-                    KeyCode::Right => file_dialog.on_right()?,
-                    KeyCode::Enter => {
-                        file_dialog.on_enter();
-                        if let Some(path) = &file_dialog.selection {
-                            match get_repo(path) {
-                                Ok(repo) => {
-                                    if repo.is_shallow() {
-                                        file_dialog.set_error(format!("{} is a shallow clone. Shallow clones are not supported due to a missing feature in the underlying libgit2 library.", repo.path().parent().unwrap().display()));
-                                    } else {
-                                        app = Some(create_app(
-                                            repo,
-                                            &mut settings,
-                                            &app_settings,
-                                            model,
-                                            max_commits,
-                                        )?)
+                        KeyCode::Esc => {
+                            if let Some(prev_app) = file_dialog.previous_app.take() {
+                                app = Some(prev_app);
+                            } else {
+                                file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+                            }
+                        }
+                        KeyCode::Up => {
+                            file_dialog.on_up(event.modifiers.contains(KeyModifiers::SHIFT))
+                        }
+                        KeyCode::Down => {
+                            file_dialog.on_down(event.modifiers.contains(KeyModifiers::SHIFT))
+                        }
+                        KeyCode::Left => file_dialog.on_left()?,
+                        KeyCode::Right => file_dialog.on_right()?,
+                        KeyCode::Enter => {
+                            file_dialog.on_enter();
+                            if let Some(path) = &file_dialog.selection {
+                                match get_repo(path) {
+                                    Ok(repo) => {
+                                        if repo.is_shallow() {
+                                            file_dialog.set_error(format!("{} is a shallow clone. Shallow clones are not supported due to a missing feature in the underlying libgit2 library.", repo.path().parent().unwrap().display()));
+                                        } else {
+                                            let mut new_app = create_app(
+                                                repo,
+                                                &mut settings,
+                                                &app_settings,
+                                                model,
+                                                max_commits,
+                                            )?;
+                                            new_app.pipeline_load_limit = pipeline_load_limit;
+                                            new_app
+                                                .set_pipeline_channel(pipeline_request_tx.clone());
+                                            new_app.set_head_pipeline_channel(
+                                                head_pipeline_tx.clone(),
+                                            );
+                                            new_app.set_job_log_channel(job_log_request_tx.clone());
+                                            new_app.request_batch_pipelines();
+                                            app = Some(new_app);
+                                        }
                                     }
-                                }
-                                Err(_) => {
-                                    file_dialog.on_right()?;
-                                }
-                            };
+                                    Err(_) => {
+                                        file_dialog.on_right()?;
+                                    }
+                                };
+                            }
+                        }
+                        _ => {}
+                    },
+                    Event::Update => {
+                        let now = Instant::now();
+                        if next_repo_refresh.get() <= now {
+                            next_repo_refresh.set(now + repo_refresh_interval);
                         }
                     }
-                    _ => {}
-                };
+                }
             }
             app
         };
@@ -919,6 +1207,7 @@ fn set_app_model(
                 }
             };
             app = app.reload(&settings, max_commits)?;
+            app.request_batch_pipelines();
         }
     }
     Ok((app, settings, Ok(())))

@@ -2,10 +2,10 @@ use crate::app::DiffType;
 use crate::util::ctrl_chars::CtrlChars;
 use crate::widgets::list::{ListItem, StatefulList};
 use git2::Oid;
-use tui::buffer::Buffer;
-use tui::layout::Rect;
-use tui::style::Style;
-use tui::widgets::{Block, StatefulWidget, Widget};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::widgets::{Block, StatefulWidget, Widget};
 
 #[derive(Default)]
 pub struct CommitViewState {
@@ -131,7 +131,7 @@ impl StatefulWidget for CommitView<'_> {
                                     if remaining_width == 0 {
                                         break;
                                     }
-                                    let pos = buf.set_spans(x, y as u16, &line, remaining_width);
+                                    let pos = buf.set_line(x, y as u16, &line, remaining_width);
                                     let w = pos.0.saturating_sub(x);
                                     x = pos.0;
                                     y = pos.1 as i32;

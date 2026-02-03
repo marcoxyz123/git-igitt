@@ -1,4 +1,7 @@
+use crate::gitlab::models::PipelineDetails;
+use crate::gitlab_config::{GitLabConfig, GitLabConfigDialog, RemoteInfo};
 use crate::settings::AppSettings;
+use crate::theme;
 use crate::util::syntax_highlight::highlight;
 use crate::widgets::branches_view::{BranchItem, BranchItemType};
 use crate::widgets::commit_view::{CommitViewInfo, CommitViewState, DiffItem};
@@ -6,15 +9,20 @@ use crate::widgets::diff_view::{DiffViewInfo, DiffViewState};
 use crate::widgets::graph_view::GraphViewState;
 use crate::widgets::list::StatefulList;
 use crate::widgets::models_view::ModelListState;
+use crate::widgets::pipeline_view::{CachedPipeline, PipelineViewState};
 use git2::{Commit, DiffDelta, DiffFormat, DiffHunk, DiffLine, DiffOptions as GDiffOptions, Oid};
 use git_graph::config::get_available_models;
 use git_graph::graph::GitGraph;
 use git_graph::print::unicode::{format_branches, print_unicode};
 use git_graph::settings::Settings;
+use ratatui::style::Color;
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
-use tui::style::Color;
+use std::sync::mpsc::Sender;
+
+pub const DEFAULT_PIPELINE_LOAD_LIMIT: usize = 1000;
 
 const HASH_COLOR: u8 = 11;
 
@@ -28,6 +36,8 @@ pub enum ActiveView {
     Models,
     Search,
     Help(u16),
+    Pipeline,
+    GitLabConfig,
 }
 
 pub enum DiffType {
@@ -94,10 +104,10 @@ impl std::fmt::Display for DiffType {
 impl DiffType {
     pub fn to_color(&self) -> Color {
         match self {
-            DiffType::Added => Color::LightGreen,
-            DiffType::Deleted => Color::LightRed,
-            DiffType::Modified => Color::LightYellow,
-            DiffType::Renamed => Color::LightBlue,
+            DiffType::Added => theme::diff::ADDED,
+            DiffType::Deleted => theme::diff::REMOVED,
+            DiffType::Modified => theme::diff::MODIFIED,
+            DiffType::Renamed => theme::ACCENT_BLUE,
         }
     }
 }
@@ -105,12 +115,45 @@ impl DiffType {
 pub type CurrentBranches = Vec<(Option<String>, Option<Oid>)>;
 pub type DiffLines = Vec<(String, Option<u32>, Option<u32>)>;
 
+pub struct PipelineRequest {
+    pub sha: String,
+    pub base_url: String,
+    pub project_id: String,
+    pub token: String,
+}
+
+pub struct PipelineResponse {
+    pub sha: String,
+    pub result: Result<Option<PipelineDetails>, String>,
+}
+
+pub struct JobLogRequest {
+    pub job_id: u64,
+    pub job_name: String,
+    pub base_url: String,
+    pub project_id: String,
+    pub token: String,
+}
+
+pub struct JobLogResponse {
+    pub job_id: u64,
+    pub job_name: String,
+    pub result: Result<String, String>,
+}
+
 pub struct App {
     pub settings: AppSettings,
     pub graph_state: GraphViewState,
     pub commit_state: CommitViewState,
     pub diff_state: DiffViewState,
+    pub pipeline_state: PipelineViewState,
     pub models_state: Option<ModelListState>,
+    pub gitlab_config: GitLabConfig,
+    pub gitlab_config_dialog: Option<GitLabConfigDialog>,
+    pub remote_info: Option<RemoteInfo>,
+    pub pipeline_tx: Option<Sender<PipelineRequest>>,
+    pub head_pipeline_tx: Option<Sender<PipelineRequest>>,
+    pub job_log_tx: Option<Sender<JobLogRequest>>,
     pub title: String,
     pub repo_name: String,
     pub active_view: ActiveView,
@@ -119,11 +162,15 @@ pub struct App {
     pub is_fullscreen: bool,
     pub horizontal_split: bool,
     pub show_branches: bool,
+    pub show_pipeline: bool,
     pub color: bool,
     pub models_path: PathBuf,
     pub error_message: Option<String>,
     pub diff_options: DiffOptions,
     pub search_term: Option<String>,
+    pub pipeline_load_limit: usize,
+    pending_pipeline_requests: HashSet<String>,
+    pub animation_tick: u8,
 }
 
 impl App {
@@ -133,12 +180,20 @@ impl App {
         repo_name: String,
         models_path: PathBuf,
     ) -> App {
+        let gitlab_config = GitLabConfig::load().unwrap_or_default();
         App {
             settings,
             graph_state: GraphViewState::default(),
             commit_state: CommitViewState::default(),
             diff_state: DiffViewState::default(),
+            pipeline_state: PipelineViewState::default(),
             models_state: None,
+            gitlab_config,
+            gitlab_config_dialog: None,
+            remote_info: None,
+            pipeline_tx: None,
+            head_pipeline_tx: None,
+            job_log_tx: None,
             title,
             repo_name,
             active_view: ActiveView::Graph,
@@ -147,11 +202,136 @@ impl App {
             is_fullscreen: false,
             horizontal_split: true,
             show_branches: false,
+            show_pipeline: false,
             color: true,
             models_path,
             error_message: None,
             diff_options: DiffOptions::default(),
             search_term: None,
+            pipeline_load_limit: DEFAULT_PIPELINE_LOAD_LIMIT,
+            pending_pipeline_requests: HashSet::new(),
+            animation_tick: 0,
+        }
+    }
+
+    pub fn tick_animation(&mut self) {
+        self.animation_tick = self.animation_tick.wrapping_add(1);
+    }
+
+    pub fn has_running_pipeline_on_head(&self) -> bool {
+        let graph = match &self.graph_state.graph {
+            Some(g) => g,
+            None => return false,
+        };
+        let head_commit = match graph.commits.first() {
+            Some(c) => c,
+            None => return false,
+        };
+        let sha = head_commit.oid.to_string();
+        matches!(
+            self.graph_state.pipeline_statuses.get(&sha),
+            Some(crate::gitlab::models::PipelineStatus::Running)
+                | Some(crate::gitlab::models::PipelineStatus::Pending)
+                | Some(crate::gitlab::models::PipelineStatus::Preparing)
+        )
+    }
+
+    pub fn set_pipeline_channel(&mut self, tx: Sender<PipelineRequest>) {
+        self.pipeline_tx = Some(tx);
+    }
+
+    pub fn set_head_pipeline_channel(&mut self, tx: Sender<PipelineRequest>) {
+        self.head_pipeline_tx = Some(tx);
+    }
+
+    pub fn set_job_log_channel(&mut self, tx: Sender<JobLogRequest>) {
+        self.job_log_tx = Some(tx);
+    }
+
+    pub fn request_job_log(&mut self) {
+        let (base_url, project_id, host) = match &self.remote_info {
+            Some(r) if r.is_valid() => (
+                r.url.as_ref().unwrap().clone(),
+                r.project_id.as_ref().unwrap().clone(),
+                r.host.as_ref().unwrap().clone(),
+            ),
+            _ => return,
+        };
+
+        let token = match self.gitlab_config.get_token(&host) {
+            Some(t) => t.to_string(),
+            None => return,
+        };
+
+        let job_id = match self.pipeline_state.get_selected_job_id() {
+            Some(id) => id,
+            None => {
+                self.pipeline_state.clear_job_log();
+                return;
+            }
+        };
+
+        let is_running = self.pipeline_state.selected_job_is_running();
+
+        if self.pipeline_state.job_log_job_id == Some(job_id) {
+            if self.pipeline_state.job_log_loading {
+                return;
+            }
+            if !is_running {
+                return;
+            }
+        }
+
+        if !is_running {
+            if let Some(cached_raw) = self.pipeline_state.get_cached_job_log(job_id).cloned() {
+                self.pipeline_state.set_job_log(job_id, &cached_raw);
+                return;
+            }
+        }
+
+        let job_name = self
+            .pipeline_state
+            .details
+            .as_ref()
+            .and_then(|d| d.stages.get(self.pipeline_state.selected_stage))
+            .and_then(|s| s.jobs.get(self.pipeline_state.selected_job))
+            .map(|j| j.name.clone())
+            .unwrap_or_default();
+
+        let switching = self.pipeline_state.job_log_job_id != Some(job_id);
+        if switching {
+            self.pipeline_state.job_log_loading = true;
+        }
+        self.pipeline_state.job_log_job_id = Some(job_id);
+
+        if let Some(tx) = &self.job_log_tx {
+            let _ = tx.send(JobLogRequest {
+                job_id,
+                job_name,
+                base_url,
+                project_id,
+                token,
+            });
+        }
+    }
+
+    pub fn handle_job_log_response(&mut self, response: JobLogResponse) {
+        if self.pipeline_state.job_log_job_id != Some(response.job_id) {
+            return;
+        }
+
+        match response.result {
+            Ok(log_text) => {
+                if !self.pipeline_state.selected_job_is_running() {
+                    self.pipeline_state
+                        .cache_job_log(response.job_id, log_text.clone());
+                }
+                self.pipeline_state.set_job_log(response.job_id, &log_text);
+            }
+            Err(e) => {
+                self.pipeline_state.job_log_error = Some(e);
+                self.pipeline_state.job_log_loading = false;
+            }
         }
     }
 
@@ -164,8 +344,10 @@ impl App {
         select_head: bool,
     ) -> Result<App, String> {
         let branches = get_branches(&graph);
+        self.remote_info = Some(RemoteInfo::from_repository(&graph.repository));
 
         self.graph_state.graph = Some(graph);
+
         self.graph_state.graph_lines = graph_lines;
         self.graph_state.text_lines = text_lines;
         self.graph_state.indices = indices;
@@ -276,6 +458,17 @@ impl App {
                     state.bwd(step)
                 }
             }
+            ActiveView::Pipeline => {
+                if is_shift || self.pipeline_state.job_log_focused {
+                    self.pipeline_state.job_log_scroll = self
+                        .pipeline_state
+                        .job_log_scroll
+                        .saturating_sub(step as u16);
+                } else {
+                    self.pipeline_state.select_prev_job();
+                    self.request_job_log();
+                }
+            }
             _ => {}
         }
         Ok((false, false))
@@ -325,6 +518,18 @@ impl App {
             ActiveView::Models => {
                 if let Some(state) = &mut self.models_state {
                     state.fwd(step)
+                }
+            }
+            ActiveView::Pipeline => {
+                if is_shift || self.pipeline_state.job_log_focused {
+                    let visible = self.pipeline_state.job_log_visible_height as usize;
+                    let max_scroll =
+                        self.pipeline_state.job_log.len().saturating_sub(visible) as u16;
+                    self.pipeline_state.job_log_scroll =
+                        (self.pipeline_state.job_log_scroll + step as u16).min(max_scroll);
+                } else {
+                    self.pipeline_state.select_next_job();
+                    self.request_job_log();
                 }
             }
             _ => {}
@@ -382,6 +587,10 @@ impl App {
                             branches.state.scroll_x.saturating_add(step as u16);
                     }
                 }
+                ActiveView::Pipeline => {
+                    self.pipeline_state.select_next_stage();
+                    self.request_job_log();
+                }
                 _ => {}
             }
         } else {
@@ -398,10 +607,22 @@ impl App {
                     ActiveView::Files
                 }
                 ActiveView::Files => ActiveView::Diff,
-                ActiveView::Diff => ActiveView::Diff,
+                ActiveView::Diff => {
+                    if self.show_pipeline {
+                        ActiveView::Pipeline
+                    } else {
+                        ActiveView::Diff
+                    }
+                }
                 ActiveView::Help(_) => self.prev_active_view.take().unwrap_or(ActiveView::Graph),
                 ActiveView::Models => ActiveView::Models,
                 ActiveView::Search => ActiveView::Search,
+                ActiveView::Pipeline => {
+                    self.pipeline_state.select_next_stage();
+                    self.request_job_log();
+                    ActiveView::Pipeline
+                }
+                ActiveView::GitLabConfig => ActiveView::GitLabConfig,
             }
         }
         Ok(reload_file_diff)
@@ -430,6 +651,10 @@ impl App {
                             branches.state.scroll_x.saturating_sub(step as u16);
                     }
                 }
+                ActiveView::Pipeline => {
+                    self.pipeline_state.select_prev_stage();
+                    self.request_job_log();
+                }
                 _ => {}
             }
         } else {
@@ -442,6 +667,12 @@ impl App {
                 ActiveView::Help(_) => self.prev_active_view.take().unwrap_or(ActiveView::Graph),
                 ActiveView::Models => ActiveView::Models,
                 ActiveView::Search => ActiveView::Search,
+                ActiveView::Pipeline => {
+                    self.pipeline_state.select_prev_stage();
+                    self.request_job_log();
+                    ActiveView::Pipeline
+                }
+                ActiveView::GitLabConfig => ActiveView::GitLabConfig,
             }
         }
     }
@@ -546,6 +777,7 @@ impl App {
             _ => {
                 self.active_view = ActiveView::Graph;
                 self.is_fullscreen = false;
+                self.pipeline_state.job_log_focused = false;
                 if let Some(content) = &mut self.commit_state.content {
                     content.diffs.state.scroll_x = 0;
                 }
@@ -682,6 +914,271 @@ impl App {
         self.show_branches = !self.show_branches;
     }
 
+    pub fn toggle_pipeline(&mut self) {
+        let remote = match &self.remote_info {
+            Some(r) if r.is_valid() => r,
+            _ => {
+                self.error_message = Some("No GitLab remote found".to_string());
+                return;
+            }
+        };
+
+        let host = remote.host.as_ref().unwrap();
+        if !self.gitlab_config.has_token_for(host) {
+            self.open_gitlab_config();
+            return;
+        }
+
+        if !self.show_pipeline {
+            self.show_pipeline = true;
+            self.active_view = ActiveView::Pipeline;
+            self.request_pipeline();
+        } else if self.active_view == ActiveView::Pipeline {
+            self.show_pipeline = false;
+            self.active_view = ActiveView::Graph;
+            self.pipeline_state.job_log_focused = false;
+        } else {
+            self.active_view = ActiveView::Pipeline;
+        }
+    }
+
+    pub fn open_gitlab_config(&mut self) {
+        let host = match &self.remote_info {
+            Some(r) => r.host.as_deref().unwrap_or("gitlab.com"),
+            None => "gitlab.com",
+        };
+        let existing_token = self.gitlab_config.get_token(host);
+        self.gitlab_config_dialog = Some(GitLabConfigDialog::new(host, existing_token));
+        let mut temp = ActiveView::GitLabConfig;
+        std::mem::swap(&mut temp, &mut self.active_view);
+        self.prev_active_view = Some(temp);
+    }
+
+    pub fn save_gitlab_config(&mut self) -> Result<(), String> {
+        if let Some(dialog) = &self.gitlab_config_dialog {
+            self.gitlab_config.set_token(&dialog.host, &dialog.token);
+            self.gitlab_config.save()?;
+        }
+        self.close_gitlab_config();
+        Ok(())
+    }
+
+    pub fn close_gitlab_config(&mut self) {
+        self.gitlab_config_dialog = None;
+        self.active_view = self.prev_active_view.take().unwrap_or(ActiveView::Graph);
+    }
+
+    pub fn request_pipeline(&mut self) {
+        let (base_url, project_id, host) = match &self.remote_info {
+            Some(r) if r.is_valid() => (
+                r.url.as_ref().unwrap().clone(),
+                r.project_id.as_ref().unwrap().clone(),
+                r.host.as_ref().unwrap().clone(),
+            ),
+            _ => {
+                self.error_message = Some("No GitLab remote found".to_string());
+                return;
+            }
+        };
+
+        let token = match self.gitlab_config.get_token(&host) {
+            Some(t) => t.to_string(),
+            None => {
+                self.open_gitlab_config();
+                return;
+            }
+        };
+
+        let sha = match self.get_selected_commit_sha() {
+            Some(sha) => sha,
+            None => {
+                self.pipeline_state.set_pipeline(None, None);
+                return;
+            }
+        };
+
+        if let Some(cached) = self.pipeline_state.get_cached(&sha).cloned() {
+            self.pipeline_state.apply_cached(&sha, &cached);
+            return;
+        }
+
+        self.pipeline_state.set_loading(Some(sha.clone()));
+
+        if let Some(tx) = &self.pipeline_tx {
+            let _ = tx.send(PipelineRequest {
+                sha,
+                base_url,
+                project_id,
+                token,
+            });
+        }
+    }
+
+    pub fn handle_pipeline_response(&mut self, response: PipelineResponse) {
+        let is_current = self.pipeline_state.current_sha.as_ref() == Some(&response.sha);
+        self.pending_pipeline_requests.remove(&response.sha);
+
+        match response.result {
+            Ok(details) => {
+                let cached = match &details {
+                    Some(d) => CachedPipeline::Found(d.clone()),
+                    None => CachedPipeline::NotFound,
+                };
+                self.pipeline_state
+                    .cache_result(response.sha.clone(), cached);
+
+                if let Some(ref d) = details {
+                    if let Some(ref pipeline) = d.pipeline {
+                        self.graph_state
+                            .pipeline_statuses
+                            .insert(response.sha.clone(), pipeline.status);
+                    }
+                }
+
+                if is_current {
+                    let was_loaded = self.pipeline_state.details.is_some();
+                    let was_running = self.pipeline_state.is_running();
+                    self.pipeline_state
+                        .set_pipeline(Some(response.sha), details);
+                    let now_running = self.pipeline_state.is_running();
+                    let selected_is_running = self.pipeline_state.selected_job_is_running();
+                    if !was_loaded
+                        || (now_running && !selected_is_running)
+                        || (was_running && !now_running)
+                    {
+                        self.pipeline_state.auto_scroll_to_active();
+                    }
+                }
+            }
+            Err(e) => {
+                self.pipeline_state
+                    .cache_result(response.sha.clone(), CachedPipeline::Error(e.clone()));
+
+                if is_current {
+                    self.pipeline_state.set_error(Some(response.sha), e);
+                }
+            }
+        }
+    }
+
+    pub fn invalidate_current_pipeline(&mut self) {
+        if let Some(sha) = &self.pipeline_state.current_sha.clone() {
+            self.pipeline_state.invalidate_cache(sha);
+        }
+    }
+
+    pub fn recheck_head_pipeline(&mut self) {
+        let (base_url, project_id, host) = match &self.remote_info {
+            Some(r) if r.is_valid() => (
+                r.url.as_ref().unwrap().clone(),
+                r.project_id.as_ref().unwrap().clone(),
+                r.host.as_ref().unwrap().clone(),
+            ),
+            _ => return,
+        };
+
+        let token = match self.gitlab_config.get_token(&host) {
+            Some(t) => t.to_string(),
+            None => return,
+        };
+
+        let graph = match &self.graph_state.graph {
+            Some(g) => g,
+            None => return,
+        };
+
+        let head_sha = match graph.commits.first() {
+            Some(c) => c.oid.to_string(),
+            None => return,
+        };
+
+        if self.pending_pipeline_requests.contains(&head_sha) {
+            return;
+        }
+
+        self.pipeline_state.invalidate_cache(&head_sha);
+        self.pending_pipeline_requests.insert(head_sha.clone());
+
+        if let Some(tx) = &self.head_pipeline_tx {
+            let _ = tx.send(PipelineRequest {
+                sha: head_sha,
+                base_url,
+                project_id,
+                token,
+            });
+        }
+    }
+
+    pub fn request_batch_pipelines(&mut self) {
+        let (base_url, project_id, host) = match &self.remote_info {
+            Some(r) if r.is_valid() => (
+                r.url.as_ref().unwrap().clone(),
+                r.project_id.as_ref().unwrap().clone(),
+                r.host.as_ref().unwrap().clone(),
+            ),
+            _ => return,
+        };
+
+        let token = match self.gitlab_config.get_token(&host) {
+            Some(t) => t.to_string(),
+            None => return,
+        };
+
+        let graph = match &self.graph_state.graph {
+            Some(g) => g,
+            None => return,
+        };
+
+        let tx = match &self.pipeline_tx {
+            Some(tx) => tx,
+            None => return,
+        };
+
+        let limit = self.pipeline_load_limit.min(graph.commits.len());
+        for commit_info in graph.commits.iter().take(limit) {
+            let sha = commit_info.oid.to_string();
+
+            if self.pending_pipeline_requests.contains(&sha) {
+                continue;
+            }
+
+            let should_refetch = match self.graph_state.pipeline_statuses.get(&sha) {
+                Some(status) => status.is_active(),
+                None => match self.pipeline_state.get_cached(&sha) {
+                    Some(CachedPipeline::NotFound) => true,
+                    Some(CachedPipeline::Found(_)) => false,
+                    Some(CachedPipeline::Error(_)) => false,
+                    None => true,
+                },
+            };
+
+            if !should_refetch {
+                continue;
+            }
+
+            self.pipeline_state.invalidate_cache(&sha);
+
+            self.pending_pipeline_requests.insert(sha.clone());
+            let _ = tx.send(PipelineRequest {
+                sha,
+                base_url: base_url.clone(),
+                project_id: project_id.clone(),
+                token: token.clone(),
+            });
+        }
+    }
+
+    pub fn has_pending_pipeline_requests(&self) -> bool {
+        !self.pending_pipeline_requests.is_empty()
+    }
+
+    fn get_selected_commit_sha(&self) -> Option<String> {
+        let graph = self.graph_state.graph.as_ref()?;
+        let selected_idx = self.graph_state.selected?;
+        let commit_info = graph.commits.get(selected_idx)?;
+        Some(commit_info.oid.to_string())
+    }
+
     pub fn show_help(&mut self) {
         if let ActiveView::Help(_) = self.active_view {
         } else {
@@ -709,9 +1206,22 @@ impl App {
         Ok(())
     }
 
+    pub fn select_head(&mut self) -> Result<(), String> {
+        if let Some(graph) = &self.graph_state.graph {
+            if let Some(index) = graph.indices.get(&graph.head.oid) {
+                self.graph_state.selected = Some(*index);
+                self.selection_changed()?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn selection_changed(&mut self) -> Result<(), String> {
         self.reload_diff_message()?;
         let _reload_file = self.reload_diff_files()?;
+        if self.show_pipeline {
+            self.request_pipeline();
+        }
         Ok(())
     }
 

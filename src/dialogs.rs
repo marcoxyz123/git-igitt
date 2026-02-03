@@ -1,8 +1,8 @@
 use crate::app::App;
 use git2::Repository;
+use ratatui::widgets::ListState;
 use std::io::Error;
 use std::path::PathBuf;
-use tui::widgets::ListState;
 
 pub struct FileDialog<'a> {
     pub title: &'a str,
@@ -31,7 +31,7 @@ impl<'a> FileDialog<'a> {
 
     pub fn fwd(&mut self, steps: usize) {
         let i = match self.state.selected() {
-            Some(i) => std::cmp::min(i.saturating_add(steps), self.dirs.len() - 1),
+            Some(i) => std::cmp::min(i.saturating_add(steps), self.dirs.len().saturating_sub(1)),
             None => 0,
         };
         self.state.select(Some(i));
