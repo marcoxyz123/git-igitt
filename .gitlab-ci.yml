@@ -96,9 +96,9 @@ build:macos-amd64:
   tags:
     - macOS
   extends: .rust_cache
-  before_script:
-    - source "$HOME/.cargo/env" || true
   script:
+    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env"
+    - export PATH="$HOME/.cargo/bin:$PATH"
     - cargo build --release --locked
     - strip target/release/${PACKAGE_NAME}
   artifacts:
@@ -114,9 +114,9 @@ build:macos-arm64:
   tags:
     - macOS
   extends: .rust_cache
-  before_script:
-    - source "$HOME/.cargo/env" || true
   script:
+    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env"
+    - export PATH="$HOME/.cargo/bin:$PATH"
     - cargo build --release --locked
     - strip target/release/${PACKAGE_NAME}
   artifacts:
