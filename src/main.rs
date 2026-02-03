@@ -955,6 +955,7 @@ fn run(
                             let prev_job_id = app.pipeline_state.get_selected_job_id();
                             app.handle_pipeline_response(response);
                             if !app.show_pipeline && app.has_running_pipeline_on_head() {
+                                let _ = app.select_head();
                                 app.show_pipeline = true;
                                 app.active_view = ActiveView::Pipeline;
                                 app.request_pipeline();

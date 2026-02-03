@@ -1206,6 +1206,16 @@ impl App {
         Ok(())
     }
 
+    pub fn select_head(&mut self) -> Result<(), String> {
+        if let Some(graph) = &self.graph_state.graph {
+            if let Some(index) = graph.indices.get(&graph.head.oid) {
+                self.graph_state.selected = Some(*index);
+                self.selection_changed()?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn selection_changed(&mut self) -> Result<(), String> {
         self.reload_diff_message()?;
         let _reload_file = self.reload_diff_files()?;
