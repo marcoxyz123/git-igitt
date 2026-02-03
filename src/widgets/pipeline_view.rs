@@ -17,6 +17,7 @@ pub struct LogLine {
 const MIN_STAGE_WIDTH: u16 = 16;
 const CONNECTOR_WIDTH: u16 = 5;
 const MAX_CACHE_SIZE: usize = 100;
+const SCROLLBAR_STR: &str = "\u{2588}";
 
 #[derive(Debug, Clone)]
 pub enum CachedPipeline {
@@ -263,22 +264,59 @@ impl PipelineViewState {
             .join("\n")
     }
 
-    pub fn needs_multirow(&self, available_width: u16) -> bool {
-        if let Some(details) = &self.details {
-            if details.stages.is_empty() {
-                return false;
-            }
-            let ideal_total: u16 = details
-                .stages
-                .iter()
-                .map(calculate_stage_width)
-                .sum::<u16>()
-                + (details.stages.len() as u16).saturating_sub(1) * CONNECTOR_WIDTH;
-            let shrink_min = details.stages.len() as u16 * MIN_STAGE_WIDTH
-                + (details.stages.len() as u16).saturating_sub(1) * CONNECTOR_WIDTH;
-            return ideal_total > available_width && shrink_min > available_width;
+    pub fn row_count(&self, available_width: u16) -> u16 {
+        let details = match &self.details {
+            Some(d) if !d.stages.is_empty() => d,
+            _ => return 0,
+        };
+        let num_stages = details.stages.len();
+        let ideal_widths: Vec<u16> = details.stages.iter().map(calculate_stage_width).collect();
+        let connector_total = (num_stages as u16).saturating_sub(1) * CONNECTOR_WIDTH;
+        let total_ideal: u16 = ideal_widths.iter().copied().sum::<u16>() + connector_total;
+
+        if total_ideal <= available_width {
+            return 1;
         }
-        false
+
+        let avail_for_stages = available_width.saturating_sub(connector_total);
+        let sum_ideal: u16 = ideal_widths.iter().copied().sum();
+        if sum_ideal > 0 && avail_for_stages >= num_stages as u16 * MIN_STAGE_WIDTH {
+            let shrunk_total: u16 = ideal_widths
+                .iter()
+                .map(|&w| {
+                    ((w as u32 * avail_for_stages as u32) / sum_ideal as u32)
+                        .max(MIN_STAGE_WIDTH as u32) as u16
+                })
+                .sum::<u16>()
+                + connector_total;
+            if shrunk_total <= available_width {
+                return 1;
+            }
+        }
+
+        let mut row_start = 0;
+        let mut rows = 0u16;
+        while row_start < num_stages {
+            let mut row_end = row_start;
+            let mut row_width: u16 = 0;
+            let wrap_margin: u16 = if rows > 0 { 3 } else { 0 };
+            let row_avail = available_width.saturating_sub(wrap_margin);
+            for (i, &ideal_w) in ideal_widths.iter().enumerate().skip(row_start) {
+                let w = ideal_w.min(row_avail);
+                let conn = if i > row_start { CONNECTOR_WIDTH } else { 0 };
+                if row_width + conn + w > row_avail && i > row_start {
+                    break;
+                }
+                row_width += conn + w;
+                row_end = i + 1;
+            }
+            if row_end == row_start {
+                row_end = row_start + 1;
+            }
+            rows += 1;
+            row_start = row_end;
+        }
+        rows
     }
 
     pub fn clear_job_log(&mut self) {
@@ -1150,7 +1188,17 @@ impl StatefulWidget for PipelineView<'_> {
 
         let layout = calculate_layout(details, content_area);
 
-        // Clamp scroll_y to valid range
+        if let Some(sl) = layout.stages.get(state.selected_stage) {
+            let stage_top = sl.y.saturating_sub(content_area.y);
+            let stage_bottom = stage_top + sl.height;
+            if stage_bottom > state.scroll_y + content_area.height {
+                state.scroll_y = stage_bottom.saturating_sub(content_area.height);
+            }
+            if stage_top < state.scroll_y + 1 {
+                state.scroll_y = stage_top.saturating_sub(1);
+            }
+        }
+
         let max_scroll = layout.total_height.saturating_sub(content_area.height);
         if state.scroll_y > max_scroll {
             state.scroll_y = max_scroll;
@@ -1272,6 +1320,25 @@ impl StatefulWidget for PipelineView<'_> {
             state.selected_stage,
             &details.stages,
         );
+
+        if layout.total_height > content_area.height && content_area.height > 0 {
+            let track_height = content_area.height as usize;
+            let total = layout.total_height as usize;
+            let thumb_height =
+                ((track_height * track_height) as f32 / total as f32).floor() as usize;
+            let thumb_height = thumb_height.clamp(1, track_height);
+            let thumb_start = content_area.top() as usize
+                + ((track_height * scroll_y as usize) as f32 / total as f32).ceil() as usize;
+            let scroll_x = content_area.right();
+            for y in thumb_start..(thumb_start + thumb_height).min(content_area.bottom() as usize) {
+                buf.set_string(
+                    scroll_x,
+                    y as u16,
+                    SCROLLBAR_STR,
+                    Style::default().fg(theme::TEXT_DIM),
+                );
+            }
+        }
 
         if let Some(pipeline) = &details.pipeline {
             let running_indicator = if state.is_running() { " ⟳" } else { "" };

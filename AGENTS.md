@@ -7,7 +7,7 @@ Interactive Git terminal application for browsing and visualizing Git history gr
 - **Language**: Rust (Edition 2021)
 - **MSRV**: 1.83.0
 - **Type**: Terminal UI (TUI) application
-- **Key Dependencies**: `git2`, `tui`, `crossterm`, `git-graph`, `syntect`
+- **Key Dependencies**: `git2`, `ratatui`, `crossterm`, `git-graph`, `syntect`, `reqwest`
 
 ## Build/Test/Lint Commands
 
@@ -45,6 +45,10 @@ src/
   settings.rs      # Configuration types
   dialogs.rs       # File dialogs
   ui.rs            # UI rendering
+  theme.rs         # Nord color palette constants
+  gitlab/          # GitLab API integration
+    mod.rs         # HTTP client, pipeline/job fetching, config
+    models.rs      # PipelineStatus, Stage, Job, PipelineDetails
   widgets/         # TUI widget components
     mod.rs         # Widget module exports
     graph_view.rs  # Git graph visualization
@@ -54,11 +58,12 @@ src/
     branches_view.rs # Branch list
     list.rs        # Reusable list widget
     models_view.rs # Branching model selection
+    pipeline_view.rs # GitLab pipeline stages, jobs, log viewer
   util/            # Utility modules
     mod.rs
     format.rs      # Commit formatting
     syntax_highlight.rs
-    ctrl_chars.rs  # Terminal control character handling
+    ctrl_chars.rs  # ANSI escape code parsing → Nord color remapping
 ```
 
 ## Code Style Guidelines
@@ -183,8 +188,9 @@ textwrap::fill(text_line, &wrapping)
 ## Dependencies Worth Knowing
 
 - `git2`: Rust bindings for libgit2
-- `tui`: Terminal UI framework
+- `ratatui`: Terminal UI framework (successor to tui-rs)
 - `crossterm`: Cross-platform terminal manipulation
 - `git-graph`: Git graph visualization library (sister project)
 - `syntect`: Syntax highlighting
 - `clap`: CLI argument parsing
+- `reqwest`: HTTP client for GitLab API

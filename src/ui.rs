@@ -126,10 +126,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let show_pipeline = app.show_pipeline || app.active_view == ActiveView::Pipeline;
 
         let main_area = if show_pipeline {
-            let multirow = app
+            let rows = app
                 .pipeline_state
-                .needs_multirow(f.area().width.saturating_sub(4));
-            let (graph_pct, pipeline_pct) = if multirow { (35, 65) } else { (50, 50) };
+                .row_count(f.area().width.saturating_sub(4));
+            let (graph_pct, pipeline_pct) = if rows >= 2 { (35, 65) } else { (50, 50) };
             let vertical_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints(
