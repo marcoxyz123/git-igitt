@@ -552,11 +552,15 @@ fn run(
             app.set_head_pipeline_channel(head_pipeline_tx.clone());
             app.set_job_log_channel(job_log_request_tx.clone());
             app.request_batch_pipelines();
+            app.active_view = ActiveView::Logo;
             Some(app)
         }
     } else {
         None
     };
+
+    let logo_dismiss_time: &Cell<Option<Instant>> =
+        &Cell::new(Some(Instant::now() + Duration::from_secs(3)));
 
     let next_repo_refresh = &Cell::new(Instant::now() + repo_refresh_interval);
     let next_pipeline_refresh: &Cell<Option<Instant>> = &Cell::new(None);
@@ -586,6 +590,9 @@ fn run(
                 next_event_time = next.min(next_event_time)
             }
             if let Some(next) = next_file_update.get() {
+                next_event_time = next.min(next_event_time)
+            }
+            if let Some(next) = logo_dismiss_time.get() {
                 next_event_time = next.min(next_event_time)
             }
 
@@ -738,6 +745,7 @@ fn run(
                             }
                             KeyCode::Char('h') => app.show_help(),
                             KeyCode::F(1) => app.show_help(),
+                            KeyCode::Char('L') => app.toggle_logo(),
                             KeyCode::Char('m') => match app.active_view {
                                 ActiveView::Models | ActiveView::Search | ActiveView::Help(_) => {}
                                 _ => {
@@ -931,6 +939,14 @@ fn run(
                     }
                     Event::Update => {
                         let now = Instant::now();
+
+                        if let Some(dismiss_at) = logo_dismiss_time.get() {
+                            if now >= dismiss_at && app.active_view == ActiveView::Logo {
+                                app.active_view =
+                                    app.prev_active_view.take().unwrap_or(ActiveView::Graph);
+                                logo_dismiss_time.set(None);
+                            }
+                        }
 
                         if next_animation_tick.get() <= now {
                             app.tick_animation();

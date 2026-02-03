@@ -5,11 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2025-02-03
+
+### Added
+
+- GitLab CI/CD pipeline integration with stages, jobs, status, and log viewer
+- Real-time pipeline status updates with animated spinners
+- Dynamic pipeline panel sizing based on stage count
+- Pipeline status coloring with Nord theme
+- Auto-select HEAD commit when pipeline panel opens
+- Startup logo overlay with Aurora gradient (Shift+L to toggle)
+- New README with screenshots
 
 ### Fixed
 
-- Scroll to root commit no longer crashes if root is a fork.
+- Fix graph branch colors
+- Fix crash with single-commit repositories
+- Fix 100% CPU/GPU usage in file dialog view
+- Fix scroll to bottom crash (#67)
+- Scroll to root commit no longer crashes if root is a fork
 
 
 ## [0.1.18] - 2023-01-15
