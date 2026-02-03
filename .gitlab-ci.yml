@@ -19,7 +19,7 @@ variables:
 
 fmt:
   stage: lint
-  image: rust:1.83
+  image: rust:latest
   tags:
     - docker
   extends: .rust_cache
@@ -32,7 +32,7 @@ fmt:
 
 clippy:
   stage: lint
-  image: rust:1.83
+  image: rust:latest
   tags:
     - docker
   extends: .rust_cache
@@ -45,7 +45,7 @@ clippy:
 
 test:
   stage: test
-  image: rust:1.83
+  image: rust:latest
   tags:
     - docker
   extends: .rust_cache
@@ -57,7 +57,7 @@ test:
 
 build:linux-amd64:
   stage: build
-  image: rust:1.83
+  image: rust:latest
   tags:
     - docker
   extends: .rust_cache
@@ -74,7 +74,7 @@ build:linux-amd64:
 
 build:linux-amd64-musl:
   stage: build
-  image: rust:1.83-alpine
+  image: rust:alpine
   tags:
     - docker
   extends: .rust_cache
