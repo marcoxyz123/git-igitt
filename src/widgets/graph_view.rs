@@ -1,16 +1,20 @@
+use crate::gitlab::models::PipelineStatus;
+use crate::theme;
 use crate::util::ctrl_chars::CtrlChars;
 use crate::widgets::branches_view::BranchItem;
 use crate::widgets::list::StatefulList;
 use git_graph::graph::GitGraph;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, StatefulWidget, Widget};
+use std::collections::HashMap;
 use std::iter::Iterator;
-use tui::buffer::Buffer;
-use tui::layout::Rect;
-use tui::style::Style;
-use tui::widgets::{Block, StatefulWidget, Widget};
 use unicode_width::UnicodeWidthStr;
 
 const SCROLL_MARGIN: usize = 3;
 const SCROLLBAR_STR: &str = "\u{2588}";
+const SHA_LENGTH: u16 = 7;
 
 #[derive(Default)]
 pub struct GraphViewState {
@@ -23,9 +27,51 @@ pub struct GraphViewState {
     pub branches: Option<StatefulList<BranchItem>>,
     pub secondary_selected: Option<usize>,
     pub secondary_changed: bool,
+    pub pipeline_statuses: HashMap<String, PipelineStatus>,
+    pub animation_tick: u8,
 }
 
 impl GraphViewState {
+    pub fn pipeline_status_color(&self, commit_idx: usize) -> Option<Color> {
+        let graph = self.graph.as_ref()?;
+        let commit_info = graph.commits.get(commit_idx)?;
+        let sha = commit_info.oid.to_string();
+        let status = self.pipeline_statuses.get(&sha)?;
+        Some(pipeline_status_to_color(*status, self.animation_tick))
+    }
+}
+
+fn pulse_color(base_r: u8, base_g: u8, base_b: u8, tick: u8) -> Color {
+    let phase = (tick as f32 / 255.0) * std::f32::consts::PI * 2.0;
+    let factor = (phase.sin() + 1.0) / 2.0;
+    let bright_factor = 0.3 + (factor * 0.7);
+    Color::Rgb(
+        (base_r as f32 * bright_factor) as u8,
+        (base_g as f32 * bright_factor) as u8,
+        (base_b as f32 * bright_factor) as u8,
+    )
+}
+
+fn pipeline_status_to_color(status: PipelineStatus, tick: u8) -> Color {
+    match status {
+        PipelineStatus::Success => theme::aurora::NORD14,
+        PipelineStatus::Running | PipelineStatus::Pending | PipelineStatus::Preparing => {
+            pulse_color(94, 129, 172, tick)
+        }
+        PipelineStatus::Failed => theme::aurora::NORD11,
+        PipelineStatus::Canceled => theme::frost::NORD7,
+        PipelineStatus::Skipped | PipelineStatus::Manual | PipelineStatus::WaitingForResource => {
+            theme::aurora::NORD12
+        }
+        PipelineStatus::Created | PipelineStatus::Scheduled => theme::snow_storm::NORD6,
+    }
+}
+
+impl GraphViewState {
+    pub fn commit_index_for_line(&self, line_idx: usize) -> Option<usize> {
+        self.indices.iter().position(|&line| line == line_idx)
+    }
+
     pub fn move_selection(&mut self, steps: usize, down: bool) -> bool {
         let changed = if let Some(sel) = self.selected {
             let new_idx = if down {
@@ -239,6 +285,14 @@ impl StatefulWidget for GraphView<'_> {
 
             let max_element_width = (list_area.width - (elem_x - x)) as usize;
 
+            let commit_info = state.commit_index_for_line(i).and_then(|commit_idx| {
+                let color = state.pipeline_status_color(commit_idx)?;
+                let graph = state.graph.as_ref()?;
+                let info = graph.commits.get(commit_idx)?;
+                let sha = &info.oid.to_string()[..SHA_LENGTH as usize];
+                Some((sha.to_string(), color))
+            });
+
             let mut body = CtrlChars::parse(graph_item).into_text();
             body.extend(CtrlChars::parse(&format!("  {}", text_item)).into_text());
 
@@ -249,10 +303,40 @@ impl StatefulWidget for GraphView<'_> {
                     if remaining_width == 0 {
                         break;
                     }
-                    let pos = buf.set_spans(x, y, &line, remaining_width);
+                    let pos = buf.set_line(x, y, &line, remaining_width);
                     let w = pos.0.saturating_sub(x);
                     x = pos.0;
                     remaining_width = remaining_width.saturating_sub(w);
+                }
+            }
+
+            if let Some((sha, color)) = commit_info {
+                for search_x in elem_x..list_area.right() {
+                    let mut found = true;
+                    for (offset, sha_char) in sha.chars().enumerate() {
+                        let check_x = search_x + offset as u16;
+                        if check_x >= list_area.right() {
+                            found = false;
+                            break;
+                        }
+                        let cell = buf.cell((check_x, y));
+                        if cell.map(|c| c.symbol()) != Some(&sha_char.to_string()) {
+                            found = false;
+                            break;
+                        }
+                    }
+                    if found {
+                        buf.set_style(
+                            Rect {
+                                x: search_x,
+                                y,
+                                width: SHA_LENGTH,
+                                height: 1,
+                            },
+                            Style::default().fg(color),
+                        );
+                        break;
+                    }
                 }
             }
 

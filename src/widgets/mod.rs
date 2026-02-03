@@ -5,3 +5,4 @@ pub mod files_view;
 pub mod graph_view;
 pub mod list;
 pub mod models_view;
+pub mod pipeline_view;

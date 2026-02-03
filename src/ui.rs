@@ -1,30 +1,32 @@
 use crate::app::{ActiveView, App, DiffMode};
 use crate::dialogs::FileDialog;
+use crate::gitlab_config::GitLabConfigDialog;
+use crate::theme;
 use crate::util::syntax_highlight::as_styled;
 use crate::widgets::branches_view::{BranchList, BranchListItem};
 use crate::widgets::commit_view::CommitView;
 use crate::widgets::files_view::{FileList, FileListItem};
 use crate::widgets::graph_view::GraphView;
 use crate::widgets::models_view::ModelListState;
+use crate::widgets::pipeline_view::PipelineView;
 use lazy_static::lazy_static;
-use tui::backend::Backend;
-use tui::layout::{Constraint, Direction, Layout, Rect};
-use tui::style::{Color, Modifier, Style};
-use tui::text::{Span, Spans, Text};
-use tui::widgets::{
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem as TuiListItem, Paragraph, Wrap,
 };
-use tui::Frame;
+use ratatui::Frame;
 
 lazy_static! {
-    pub static ref HINT_STYLE: Style = Style::default().fg(Color::Cyan);
+    pub static ref HINT_STYLE: Style = Style::default().fg(theme::ACCENT);
 }
 
-pub fn draw_open_repo<B: Backend>(f: &mut Frame<B>, dialog: &mut FileDialog) {
+pub fn draw_open_repo(f: &mut Frame, dialog: &mut FileDialog) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(4), Constraint::Min(0)].as_ref())
-        .split(f.size());
+        .split(f.area());
 
     let top_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -49,7 +51,7 @@ pub fn draw_open_repo<B: Backend>(f: &mut Frame<B>, dialog: &mut FileDialog) {
         .map(|f| {
             if dialog.color {
                 if f.1 {
-                    TuiListItem::new(&f.0[..]).style(Style::default().fg(Color::LightGreen))
+                    TuiListItem::new(&f.0[..]).style(Style::default().fg(theme::SUCCESS))
                 } else {
                     TuiListItem::new(&f.0[..])
                 }
@@ -70,13 +72,13 @@ pub fn draw_open_repo<B: Backend>(f: &mut Frame<B>, dialog: &mut FileDialog) {
     f.render_stateful_widget(list, chunks[1], &mut dialog.state);
 
     if let Some(error) = &dialog.error_message {
-        draw_error_dialog(f, f.size(), error, dialog.color);
+        draw_error_dialog(f, f.area(), error, dialog.color);
     }
 }
 
-pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     if let ActiveView::Help(scroll) = app.active_view {
-        draw_help(f, f.size(), scroll);
+        draw_help(f, f.area(), scroll);
         return;
     }
 
@@ -84,7 +86,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(0)].as_ref())
-            .split(f.size());
+            .split(f.area());
 
         let help = Paragraph::new("  Enter = confirm, P = permanent, Esc = abort.");
         f.render_widget(help, chunks[0]);
@@ -100,11 +102,12 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             &app.active_view
         };
         match view {
-            ActiveView::Branches => draw_branches(f, f.size(), app),
-            ActiveView::Graph => draw_graph(f, f.size(), app),
-            ActiveView::Commit => draw_commit(f, f.size(), app),
-            ActiveView::Files => draw_files(f, f.size(), app),
-            ActiveView::Diff => draw_diff(f, f.size(), app),
+            ActiveView::Branches => draw_branches(f, f.area(), app),
+            ActiveView::Graph => draw_graph(f, f.area(), app),
+            ActiveView::Commit => draw_commit(f, f.area(), app),
+            ActiveView::Files => draw_files(f, f.area(), app),
+            ActiveView::Diff => draw_diff(f, f.area(), app),
+            ActiveView::Pipeline => draw_pipeline(f, f.area(), app),
             _ => {}
         }
     } else {
@@ -120,6 +123,18 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         };
 
         let show_branches = app.show_branches || app.active_view == ActiveView::Branches;
+        let show_pipeline = app.show_pipeline || app.active_view == ActiveView::Pipeline;
+
+        let main_area = if show_pipeline {
+            let vertical_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .split(f.area());
+            draw_pipeline(f, vertical_chunks[1], app);
+            vertical_chunks[0]
+        } else {
+            f.area()
+        };
 
         let top_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -130,7 +145,7 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 ]
                 .as_ref(),
             )
-            .split(f.size());
+            .split(main_area);
 
         let chunks = Layout::default()
             .direction(base_split)
@@ -165,14 +180,18 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     }
 
     if let Some(error) = &app.error_message {
-        draw_error_dialog(f, f.size(), error, app.color);
+        draw_error_dialog(f, f.area(), error, app.color);
     } else if app.active_view == ActiveView::Search {
-        draw_search_dialog(f, f.size(), &app.search_term);
+        draw_search_dialog(f, f.area(), &app.search_term);
+    } else if let (ActiveView::GitLabConfig, Some(dialog)) =
+        (&app.active_view, &app.gitlab_config_dialog)
+    {
+        draw_gitlab_config_dialog(f, f.area(), dialog, app.color);
     }
 }
 
-fn create_title<'a>(title: &'a str, hint: &'a str, color: bool) -> Spans<'a> {
-    Spans(vec![
+fn create_title<'a>(title: &'a str, hint: &'a str, color: bool) -> Line<'a> {
+    Line::from(vec![
         Span::raw(format!(" {} ", title)),
         if color {
             Span::styled(hint, *HINT_STYLE)
@@ -182,7 +201,7 @@ fn create_title<'a>(title: &'a str, hint: &'a str, color: bool) -> Spans<'a> {
     ])
 }
 
-fn draw_graph<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
+fn draw_graph(f: &mut Frame, target: Rect, app: &mut App) {
     let title = format!("Graph - {}", app.repo_name);
     let mut block = Block::default().borders(Borders::ALL).title(create_title(
         &title,
@@ -203,7 +222,7 @@ fn draw_graph<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
     f.render_stateful_widget(graph, target, &mut app.graph_state);
 }
 
-fn draw_branches<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
+fn draw_branches(f: &mut Frame, target: Rect, app: &mut App) {
     let color = app.color;
 
     let mut block = Block::default().borders(Borders::ALL).title(create_title(
@@ -247,7 +266,7 @@ fn draw_branches<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
     }
 }
 
-fn draw_commit<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
+fn draw_commit(f: &mut Frame, target: Rect, app: &mut App) {
     let mut block = Block::default().borders(Borders::ALL).title(create_title(
         "Commit",
         " <-Graph | Files-> ",
@@ -263,7 +282,7 @@ fn draw_commit<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
     f.render_stateful_widget(commit, target, &mut app.commit_state);
 }
 
-fn draw_files<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
+fn draw_files(f: &mut Frame, target: Rect, app: &mut App) {
     let color = app.color;
     if let Some(state) = &mut app.commit_state.content {
         let title = format!(
@@ -321,7 +340,7 @@ fn draw_files<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
     }
 }
 
-fn draw_diff<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
+fn draw_diff(f: &mut Frame, target: Rect, app: &mut App) {
     if let Some(state) = &app.diff_state.content {
         let title = match app.diff_options.diff_mode {
             DiffMode::Diff => format!(
@@ -342,9 +361,9 @@ fn draw_diff<B: Backend>(f: &mut Frame<B>, target: Rect, app: &mut App) {
         }
 
         let styles = [
-            Style::default().fg(Color::LightGreen),
-            Style::default().fg(Color::LightRed),
-            Style::default().fg(Color::LightBlue),
+            Style::default().fg(theme::diff::ADDED),
+            Style::default().fg(theme::diff::REMOVED),
+            Style::default().fg(theme::diff::HUNK_HEADER),
             Style::default(),
         ];
 
@@ -487,12 +506,27 @@ fn style_diff_line<'a>(
     }
 }
 
-fn draw_models<B: Backend>(
-    f: &mut Frame<B>,
-    target: Rect,
-    color: bool,
-    state: &mut ModelListState,
-) {
+fn draw_pipeline(f: &mut Frame, target: Rect, app: &mut App) {
+    let mut block = Block::default().borders(Borders::ALL).title(create_title(
+        "Pipeline",
+        " P=toggle ",
+        app.color,
+    ));
+
+    if app.active_view == ActiveView::Pipeline {
+        block = block.border_type(BorderType::Thick);
+    }
+
+    let mut pipeline = PipelineView::default().block(block);
+
+    if app.color {
+        pipeline = pipeline.highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    }
+
+    f.render_stateful_widget(pipeline, target, &mut app.pipeline_state);
+}
+
+fn draw_models(f: &mut Frame, target: Rect, color: bool, state: &mut ModelListState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Branching model ");
@@ -512,7 +546,7 @@ fn draw_models<B: Backend>(
     f.render_stateful_widget(list, target, &mut state.state);
 }
 
-fn draw_help<B: Backend>(f: &mut Frame<B>, target: Rect, scroll: u16) {
+fn draw_help(f: &mut Frame, target: Rect, scroll: u16) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Help [back with Esc] ");
@@ -533,6 +567,7 @@ fn draw_help<B: Backend>(f: &mut Frame<B>, target: Rect, scroll: u16) {
            Esc                Return to default view\n  \
            L                  Toggle horizontal/vertical layout\n  \
            B                  Toggle show branch list\n  \
+           P                  Toggle GitLab pipeline panel\n  \
          \n\
          Navigate/select\n  \
          \n  \
@@ -563,14 +598,14 @@ fn draw_help<B: Backend>(f: &mut Frame<B>, target: Rect, scroll: u16) {
     f.render_widget(paragraph, target);
 }
 
-fn draw_error_dialog<B: Backend>(f: &mut Frame<B>, target: Rect, error: &str, color: bool) {
+fn draw_error_dialog(f: &mut Frame, target: Rect, error: &str, color: bool) {
     let mut block = Block::default()
         .title(" Error - Press Enter to continue ")
         .borders(Borders::ALL)
         .border_type(BorderType::Thick);
 
     if color {
-        block = block.border_style(Style::default().fg(Color::LightRed));
+        block = block.border_style(Style::default().fg(theme::ERROR));
     }
 
     let paragraph = Paragraph::new(error).block(block).wrap(Wrap { trim: true });
@@ -580,7 +615,7 @@ fn draw_error_dialog<B: Backend>(f: &mut Frame<B>, target: Rect, error: &str, co
     f.render_widget(paragraph, area);
 }
 
-fn draw_search_dialog<B: Backend>(f: &mut Frame<B>, target: Rect, search: &Option<String>) {
+fn draw_search_dialog(f: &mut Frame, target: Rect, search: &Option<String>) {
     let block = Block::default()
         .title(" Search - Search with Enter, abort with Esc ")
         .borders(Borders::ALL)
@@ -595,6 +630,124 @@ fn draw_search_dialog<B: Backend>(f: &mut Frame<B>, target: Rect, search: &Optio
     let area = centered_rect(60, 12, target);
     f.render_widget(Clear, area);
     f.render_widget(paragraph, area);
+}
+
+fn draw_gitlab_config_dialog(
+    f: &mut Frame,
+    target: Rect,
+    dialog: &GitLabConfigDialog,
+    color: bool,
+) {
+    let block = Block::default()
+        .title(" GitLab Access Token ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(if color { theme::ACCENT } else { Color::White }));
+
+    let area = centered_rect(60, 9, target);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+
+    let inner = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(2),
+    };
+
+    let host_label = Line::from(vec![
+        Span::raw("Host: "),
+        Span::styled(
+            &dialog.host,
+            Style::default()
+                .fg(if color { theme::ACCENT } else { Color::White })
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(
+        Paragraph::new(host_label),
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 1,
+        },
+    );
+
+    let token_label = Span::styled(
+        "Access Token:",
+        Style::default()
+            .fg(if color { theme::ACCENT } else { Color::White })
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(
+        Paragraph::new(token_label),
+        Rect {
+            x: inner.x,
+            y: inner.y + 2,
+            width: inner.width,
+            height: 1,
+        },
+    );
+
+    let input_style = Style::default().fg(if color {
+        theme::TEXT_BRIGHT
+    } else {
+        Color::White
+    });
+
+    let cursor_display = if !dialog.token.is_empty() {
+        let pos = dialog.cursor_pos.min(dialog.token.len());
+        let (before, after) = dialog.token.split_at(pos);
+        vec![
+            Span::styled(before, input_style),
+            Span::styled(
+                "_",
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::RAPID_BLINK),
+            ),
+            Span::styled(after, input_style),
+        ]
+    } else {
+        vec![
+            Span::styled(
+                "_",
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::RAPID_BLINK),
+            ),
+            Span::styled(
+                "glpat-xxxxxxxxxxxxxxxxxxxx",
+                Style::default().fg(theme::TEXT_DIM),
+            ),
+        ]
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(cursor_display)),
+        Rect {
+            x: inner.x + 2,
+            y: inner.y + 3,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        },
+    );
+
+    let help_style = Style::default().fg(if color {
+        theme::TEXT_DIM
+    } else {
+        Color::DarkGray
+    });
+    f.render_widget(
+        Paragraph::new(Span::styled("Enter: save | Esc: cancel", help_style)),
+        Rect {
+            x: inner.x,
+            y: inner.y + 5,
+            width: inner.width,
+            height: 1,
+        },
+    );
 }
 
 /// helper function to create a centered rect using up

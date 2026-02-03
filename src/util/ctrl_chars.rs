@@ -1,8 +1,10 @@
 use std::fmt;
 
 use muncher::Muncher;
-use tui::style::{Color, Style};
-use tui::text::Text;
+use ratatui::style::Style;
+use ratatui::text::Text;
+
+use crate::theme;
 
 #[derive(Clone, Debug, Default)]
 pub struct CtrlChunk {
@@ -74,61 +76,32 @@ impl CtrlChunk {
     pub fn into_text<'a>(self) -> Text<'a> {
         let mut style = Style::default();
         if self.ctrl.len() > 2 {
-            match &self.ctrl[2] {
-                ctrl if ctrl == "0" => {
-                    style = style.fg(Color::Black);
-                }
-                ctrl if ctrl == "1" => {
-                    style = style.fg(Color::Red);
-                }
-                ctrl if ctrl == "2" => {
-                    style = style.fg(Color::Green);
-                }
-                ctrl if ctrl == "3" => {
-                    style = style.fg(Color::Yellow);
-                }
-                ctrl if ctrl == "4" => {
-                    style = style.fg(Color::Blue);
-                }
-                ctrl if ctrl == "5" => {
-                    style = style.fg(Color::Magenta);
-                }
-                ctrl if ctrl == "6" => {
-                    style = style.fg(Color::Cyan);
-                }
-                ctrl if ctrl == "7" => {
-                    style = style.fg(Color::White);
-                }
-                // Bright Colors
-                ctrl if ctrl == "8" => {
-                    style = style.fg(Color::DarkGray);
-                }
-                ctrl if ctrl == "9" => {
-                    style = style.fg(Color::LightRed);
-                }
-                ctrl if ctrl == "10" => {
-                    style = style.fg(Color::LightGreen);
-                }
-                ctrl if ctrl == "11" => {
-                    style = style.fg(Color::LightYellow);
-                }
-                ctrl if ctrl == "12" => {
-                    style = style.fg(Color::LightBlue);
-                }
-                ctrl if ctrl == "13" => {
-                    style = style.fg(Color::LightMagenta);
-                }
-                ctrl if ctrl == "14" => {
-                    style = style.fg(Color::LightCyan);
-                }
-                // tui has no "Bright White" color code equivalent
-                // White
-                ctrl if ctrl == "15" => {
-                    style = style.fg(Color::White);
-                }
-                // _ => panic!("control sequence not found"),
+            // Map ANSI 256-color codes (from git-graph) to Nord palette
+            // Format: ESC[38;5;Nm where N is 0-15 for basic colors
+            let color = match self.ctrl[2].as_str() {
+                // Standard colors (0-7)
+                "0" => theme::polar_night::NORD0, // black → dark background
+                "1" => theme::aurora::NORD11,     // red → Nord red
+                "2" => theme::aurora::NORD14,     // green → Nord green
+                "3" => theme::aurora::NORD13,     // yellow → Nord yellow
+                "4" => theme::frost::NORD10,      // blue → Nord dark blue
+                "5" => theme::aurora::NORD15,     // magenta → Nord purple
+                "6" => theme::frost::NORD8,       // cyan → Nord cyan
+                "7" => theme::snow_storm::NORD4,  // white → Nord light gray
+
+                // Bright colors (8-15)
+                "8" => theme::polar_night::NORD3, // bright black → Nord comment gray
+                "9" => theme::aurora::NORD11,     // bright red → Nord red
+                "10" => theme::aurora::NORD14,    // bright green → Nord green
+                "11" => theme::aurora::NORD13,    // bright yellow → Nord yellow
+                "12" => theme::frost::NORD9,      // bright blue → Nord blue
+                "13" => theme::aurora::NORD15,    // bright magenta → Nord purple
+                "14" => theme::frost::NORD7,      // bright cyan → Nord teal
+                "15" => theme::snow_storm::NORD6, // bright white → Nord white
+
                 _ => return Text::raw(self.text),
-            }
+            };
+            style = style.fg(color);
         } else {
             return Text::raw(self.text);
         }

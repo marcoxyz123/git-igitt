@@ -16,14 +16,21 @@ use git_graph::{
     },
 };
 use git_igitt::app::DiffMode;
+use git_igitt::gitlab::GitLabClient;
 use git_igitt::settings::AppSettings;
 use git_igitt::{
-    app::{ActiveView, App, CurrentBranches},
+    app::{
+        ActiveView, App, CurrentBranches, PipelineRequest, PipelineResponse,
+        DEFAULT_PIPELINE_LOAD_LIMIT,
+    },
     dialogs::FileDialog,
     ui,
 };
 use platform_dirs::AppDirs;
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::cell::Cell;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Instant;
 use std::{
     error::Error,
@@ -32,10 +39,10 @@ use std::{
     str::FromStr,
     time::Duration,
 };
-use tui::{backend::CrosstermBackend, Terminal};
 
 const REPO_CONFIG_FILE: &str = "git-graph.toml";
 const CHECK_CHANGE_RATE: u64 = 2000;
+const PIPELINE_REFRESH_RATE: u64 = 5000;
 const INITIAL_KEY_REPEAT_TIME: u128 = 100;
 const MIN_KEY_REPEAT_TIME: u128 = 50;
 
@@ -273,6 +280,14 @@ fn from_args() -> Result<(), String> {
                 .required(false)
                 .num_args(1),
         )
+        .arg(
+            Arg::new("pipeline-load-limit")
+                .long("pipeline-load-limit")
+                .help("Maximum number of commits to load pipeline status for. Default: 1000.")
+                .required(false)
+                .num_args(1)
+                .value_name("count"),
+        )
         .subcommand(Command::new("model")
             .about("Prints or permanently sets the branching model for a repository.")
             .arg(
@@ -353,6 +368,19 @@ fn from_args() -> Result<(), String> {
         },
     };
 
+    let pipeline_load_limit = match matches.get_one::<String>("pipeline-load-limit") {
+        None => DEFAULT_PIPELINE_LOAD_LIMIT,
+        Some(str) => match str.parse::<usize>() {
+            Ok(val) => val,
+            Err(_) => {
+                return Err(format![
+                    "Option pipeline-load-limit must be a positive number, but got '{}'",
+                    str
+                ])
+            }
+        },
+    };
+
     let include_remote = !matches.get_flag("local");
     let reverse_commit_order = matches.get_flag("reverse");
 
@@ -426,6 +454,7 @@ fn from_args() -> Result<(), String> {
         app_settings,
         model.map(|x| &**x),
         commit_limit,
+        pipeline_load_limit,
     )
     .map_err(|err| err.to_string())?;
 
@@ -438,6 +467,7 @@ fn run(
     app_settings: AppSettings,
     model: Option<&str>,
     max_commits: Option<usize>,
+    pipeline_load_limit: usize,
 ) -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
 
@@ -448,6 +478,21 @@ fn run(
     let mut terminal = Terminal::new(backend)?;
 
     let repo_refresh_interval = Duration::from_millis(CHECK_CHANGE_RATE);
+    let pipeline_refresh_interval = Duration::from_millis(PIPELINE_REFRESH_RATE);
+
+    let (pipeline_request_tx, pipeline_request_rx) = mpsc::channel::<PipelineRequest>();
+    let (pipeline_response_tx, pipeline_response_rx) = mpsc::channel::<PipelineResponse>();
+
+    thread::spawn(move || {
+        while let Ok(req) = pipeline_request_rx.recv() {
+            let result = GitLabClient::new(&req.base_url, &req.token)
+                .and_then(|client| client.get_pipeline_details(&req.project_id, &req.sha));
+            let _ = pipeline_response_tx.send(PipelineResponse {
+                sha: req.sha,
+                result,
+            });
+        }
+    });
 
     let mut file_dialog =
         FileDialog::new("Open repository", settings.colored).map_err(|err| err.to_string())?;
@@ -469,19 +514,18 @@ fn run(
         if repository.is_shallow() {
             None
         } else {
-            Some(create_app(
-                repository,
-                &mut settings,
-                &app_settings,
-                model,
-                max_commits,
-            )?)
+            let mut app = create_app(repository, &mut settings, &app_settings, model, max_commits)?;
+            app.pipeline_load_limit = pipeline_load_limit;
+            app.set_pipeline_channel(pipeline_request_tx.clone());
+            app.request_batch_pipelines();
+            Some(app)
         }
     } else {
         None
     };
 
     let next_repo_refresh = &Cell::new(Instant::now() + repo_refresh_interval);
+    let next_pipeline_refresh: &Cell<Option<Instant>> = &Cell::new(None);
     let next_diff_update: &Cell<Option<Instant>> = &Cell::new(None);
     let next_file_update: &Cell<Option<Instant>> = &Cell::new(None);
     let mut reset_diff_scroll = false;
@@ -492,6 +536,9 @@ fn run(
 
         move || loop {
             let mut next_event_time = next_repo_refresh.get();
+            if let Some(next) = next_pipeline_refresh.get() {
+                next_event_time = next.min(next_event_time)
+            }
             if let Some(next) = next_diff_update.get() {
                 next_event_time = next.min(next_event_time)
             }
@@ -549,7 +596,65 @@ fn run(
             let mut reload_diffs = false;
             let mut reload_file = false;
             let mut reset_scroll = true;
-            if app.active_view == ActiveView::Search {
+            if app.active_view == ActiveView::GitLabConfig {
+                if let Event::Input(event) = next_event() {
+                    match event.code {
+                        KeyCode::Char(c) => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.insert_char(c);
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.delete_char();
+                            }
+                        }
+                        KeyCode::Delete => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.delete_forward();
+                            }
+                        }
+                        KeyCode::Left => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_left();
+                            }
+                        }
+                        KeyCode::Right => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_right();
+                            }
+                        }
+                        KeyCode::Home => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_home();
+                            }
+                        }
+                        KeyCode::End => {
+                            if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                dialog.move_cursor_end();
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(dialog) = &app.gitlab_config_dialog {
+                                if dialog.is_valid() {
+                                    if let Err(err) = app.save_gitlab_config() {
+                                        app.set_error(err);
+                                    } else {
+                                        app.show_pipeline = true;
+                                        app.request_pipeline();
+                                    }
+                                } else {
+                                    app.set_error("Please enter an access token".to_string());
+                                }
+                            }
+                        }
+                        KeyCode::Esc => {
+                            app.close_gitlab_config();
+                        }
+                        _ => {}
+                    }
+                }
+            } else if app.active_view == ActiveView::Search {
                 if let Event::Input(event) = next_event() {
                     match event.code {
                         KeyCode::Char(c) => app.character_entered(c),
@@ -598,7 +703,10 @@ fn run(
                                     }
                                 }
                             },
-                            KeyCode::Char('r') => app = app.reload(&settings, max_commits)?,
+                            KeyCode::Char('r') => {
+                                app = app.reload(&settings, max_commits)?;
+                                app.request_batch_pipelines();
+                            }
                             KeyCode::Char('l') => {
                                 if event.modifiers.contains(KeyModifiers::CONTROL) {
                                     app.toggle_line_numbers()?;
@@ -672,6 +780,14 @@ fn run(
                                         app.set_error(err);
                                         app.active_view = ActiveView::Graph;
                                     }
+                                } else {
+                                    app.toggle_pipeline();
+                                    if app.show_pipeline && app.pipeline_state.is_running() {
+                                        next_pipeline_refresh
+                                            .set(Some(Instant::now() + pipeline_refresh_interval));
+                                    } else if !app.show_pipeline {
+                                        next_pipeline_refresh.set(None);
+                                    }
                                 }
                             }
 
@@ -739,11 +855,40 @@ fn run(
                     }
                     Event::Update => {
                         let now = Instant::now();
+
+                        app.tick_animation();
+                        app.graph_state.animation_tick = app.animation_tick;
+                        app.pipeline_state.animation_tick = app.animation_tick;
+
                         if next_repo_refresh.get() <= now {
                             if app.graph_state.graph.is_some() && has_changed(&mut app)? {
                                 app = app.reload(&settings, max_commits)?;
+                                app.request_batch_pipelines();
                             }
                             next_repo_refresh.set(now + repo_refresh_interval);
+                        }
+                        while let Ok(response) = pipeline_response_rx.try_recv() {
+                            let was_running_on_head = app.has_running_pipeline_on_head();
+                            app.handle_pipeline_response(response);
+                            if !was_running_on_head && app.has_running_pipeline_on_head() {
+                                app.show_pipeline = true;
+                                app.request_pipeline();
+                            }
+                            if app.pipeline_state.is_running() {
+                                next_pipeline_refresh.set(Some(now + pipeline_refresh_interval));
+                            }
+                        }
+                        if let Some(next) = next_pipeline_refresh.get() {
+                            if next <= now {
+                                if app.show_pipeline && app.pipeline_state.is_running() {
+                                    app.invalidate_current_pipeline();
+                                    app.request_pipeline();
+                                    next_pipeline_refresh
+                                        .set(Some(now + pipeline_refresh_interval));
+                                } else {
+                                    next_pipeline_refresh.set(None);
+                                }
+                            }
                         }
                         if let Some(next) = next_diff_update.get() {
                             if next <= now {
@@ -765,6 +910,9 @@ fn run(
                 next_diff_update.set(Some(
                     Instant::now() + Duration::from_millis(2 * key_repeat_time as u64),
                 ));
+                if app.show_pipeline {
+                    app.request_pipeline();
+                }
             }
             if reload_file {
                 if reset_scroll {
@@ -852,13 +1000,18 @@ fn run(
                                         if repo.is_shallow() {
                                             file_dialog.set_error(format!("{} is a shallow clone. Shallow clones are not supported due to a missing feature in the underlying libgit2 library.", repo.path().parent().unwrap().display()));
                                         } else {
-                                            app = Some(create_app(
+                                            let mut new_app = create_app(
                                                 repo,
                                                 &mut settings,
                                                 &app_settings,
                                                 model,
                                                 max_commits,
-                                            )?)
+                                            )?;
+                                            new_app.pipeline_load_limit = pipeline_load_limit;
+                                            new_app
+                                                .set_pipeline_channel(pipeline_request_tx.clone());
+                                            new_app.request_batch_pipelines();
+                                            app = Some(new_app);
                                         }
                                     }
                                     Err(_) => {
@@ -935,6 +1088,7 @@ fn set_app_model(
                 }
             };
             app = app.reload(&settings, max_commits)?;
+            app.request_batch_pipelines();
         }
     }
     Ok((app, settings, Ok(())))
