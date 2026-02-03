@@ -198,6 +198,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     {
         draw_gitlab_config_dialog(f, f.area(), dialog, app.color);
     }
+
+    if let ActiveView::Logo = app.active_view {
+        draw_logo(f, f.area());
+    }
 }
 
 fn create_title<'a>(title: &'a str, hint: &'a str, color: bool) -> Line<'a> {
@@ -912,4 +916,81 @@ fn centered_rect(size_x: u16, size_y: u16, r: Rect) -> Rect {
             .as_ref(),
         )
         .split(popup_layout[1])[1]
+}
+
+const GIT_IGITT_LOGO: [&str; 6] = [
+    " ██████╗ ██╗████████╗     ██╗ ██████╗ ██╗████████╗████████╗   ██╗   ",
+    "██╔════╝ ██║╚══██╔══╝     ██║██╔════╝ ██║╚══██╔══╝╚══██╔══╝   ██║   ",
+    "██║  ███╗██║   ██║   ████╗██║██║  ███╗██║   ██║      ██║   ████████╗",
+    "██║   ██║██║   ██║   ╚═══╝██║██║   ██║██║   ██║      ██║   ╚══██╔══╝",
+    "╚██████╔╝██║   ██║        ██║╚██████╔╝██║   ██║      ██║      ██║   ",
+    " ╚═════╝ ╚═╝   ╚═╝        ╚═╝ ╚═════╝ ╚═╝   ╚═╝      ╚═╝      ╚═╝   ",
+];
+
+const LOGO_PLUS_OFFSET: usize = 59;
+
+const AURORA_GRADIENT: [Color; 6] = [
+    theme::aurora::NORD11,
+    theme::aurora::NORD12,
+    theme::aurora::NORD13,
+    theme::aurora::NORD14,
+    theme::aurora::NORD15,
+    theme::aurora::NORD15,
+];
+
+fn draw_logo(f: &mut Frame, area: Rect) {
+    let logo_width = GIT_IGITT_LOGO[0].chars().count() as u16;
+    let logo_height = GIT_IGITT_LOGO.len() as u16;
+
+    let overlay_w = logo_width + 4;
+    let overlay_h = logo_height + 2;
+
+    if area.width < overlay_w || area.height < overlay_h {
+        return;
+    }
+
+    let top_zone_h = area.height * 35 / 100;
+    let x = area.x + (area.width - overlay_w) / 2;
+    let y = area.y + top_zone_h.saturating_sub(overlay_h) / 2;
+    let overlay_rect = Rect::new(x, y, overlay_w, overlay_h);
+
+    f.render_widget(Clear, overlay_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::polar_night::NORD3))
+        .style(Style::default().bg(theme::BG));
+    let inner = block.inner(overlay_rect);
+    f.render_widget(block, overlay_rect);
+
+    for (i, line) in GIT_IGITT_LOGO.iter().enumerate() {
+        let row = inner.y + i as u16;
+        if row >= inner.y + inner.height {
+            break;
+        }
+
+        let chars: Vec<char> = line.chars().collect();
+        let main_part: String = chars.iter().take(LOGO_PLUS_OFFSET).collect();
+        let plus_part: String = chars.iter().skip(LOGO_PLUS_OFFSET).collect();
+
+        let main_span = Span::styled(
+            main_part,
+            Style::default().fg(theme::frost::NORD10).bg(theme::BG),
+        );
+        let plus_span = Span::styled(
+            plus_part,
+            Style::default().fg(AURORA_GRADIENT[i]).bg(theme::BG),
+        );
+
+        let line_widget = Paragraph::new(Line::from(vec![main_span, plus_span]));
+        f.render_widget(
+            line_widget,
+            Rect {
+                x: inner.x + inner.width.saturating_sub(logo_width) / 2,
+                y: row,
+                width: logo_width.min(inner.width),
+                height: 1,
+            },
+        );
+    }
 }

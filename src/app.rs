@@ -38,6 +38,7 @@ pub enum ActiveView {
     Help(u16),
     Pipeline,
     GitLabConfig,
+    Logo,
 }
 
 pub enum DiffType {
@@ -623,6 +624,7 @@ impl App {
                     ActiveView::Pipeline
                 }
                 ActiveView::GitLabConfig => ActiveView::GitLabConfig,
+                ActiveView::Logo => ActiveView::Logo,
             }
         }
         Ok(reload_file_diff)
@@ -673,6 +675,7 @@ impl App {
                     ActiveView::Pipeline
                 }
                 ActiveView::GitLabConfig => ActiveView::GitLabConfig,
+                ActiveView::Logo => ActiveView::Logo,
             }
         }
     }
@@ -767,7 +770,7 @@ impl App {
 
     pub fn on_esc(&mut self) -> Result<bool, String> {
         match self.active_view {
-            ActiveView::Models | ActiveView::Help(_) => {
+            ActiveView::Models | ActiveView::Help(_) | ActiveView::Logo => {
                 self.active_view = self.prev_active_view.take().unwrap_or(ActiveView::Graph);
             }
             ActiveView::Search => {
@@ -1183,6 +1186,16 @@ impl App {
         if let ActiveView::Help(_) = self.active_view {
         } else {
             let mut temp = ActiveView::Help(0);
+            std::mem::swap(&mut temp, &mut self.active_view);
+            self.prev_active_view = Some(temp);
+        }
+    }
+
+    pub fn toggle_logo(&mut self) {
+        if let ActiveView::Logo = self.active_view {
+            self.active_view = self.prev_active_view.take().unwrap_or(ActiveView::Graph);
+        } else {
+            let mut temp = ActiveView::Logo;
             std::mem::swap(&mut temp, &mut self.active_view);
             self.prev_active_view = Some(temp);
         }

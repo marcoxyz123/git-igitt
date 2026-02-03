@@ -154,12 +154,72 @@ textwrap::fill(text_line, &wrapping)
 - Use `#[test]` attribute for test functions
 - Prefer `assert_eq!` with descriptive messages
 
-## Git & CI
+## Git Workflow
 
-- CI runs on all branches (push) and PRs to master
-- All tests must pass: `cargo test --all`
-- Format check must pass: `cargo fmt --all -- --check`
-- Clippy must pass with no warnings: `cargo clippy --all --all-targets -- --deny warnings`
+### Remotes
+
+| Remote | URL | Purpose |
+|--------|-----|---------|
+| `origin` | `github.com/git-bahn/git-igitt` | Upstream (read-only for PRs) |
+| `gitlab` | `gitlab.berger.sx/mac/git-igitt` | Primary development remote (CI/CD) |
+| `fork` | `github.com/marcoxyz123/git-igitt` | GitHub fork |
+
+- **Push to `gitlab`** for all development work and CI pipelines
+- `master` tracks `origin/master`; push to `gitlab` separately
+
+### Branching Model (git-flow style)
+
+| Prefix | Purpose | Color (graph) |
+|--------|---------|---------------|
+| `master` | Stable mainline | bright_blue |
+| `feature/*` | New features | bright_magenta / bright_cyan |
+| `fix/*` | Bug fixes | bright_cyan |
+| `bugfix/*` / `hotfix/*` | Urgent fixes | bright_red |
+| `release/*` | Release prep | bright_green |
+
+### Branch Lifecycle
+
+```
+1. Create branch from master:
+   git checkout -b feature/my-feature master
+
+2. Work, commit, push to gitlab:
+   git push gitlab feature/my-feature
+
+3. When done, merge to master with --no-ff:
+   git checkout master
+   git merge --no-ff feature/my-feature -m "Merge branch 'feature/my-feature'"
+   git push gitlab master
+
+4. Delete the branch:
+   git branch -D feature/my-feature
+   git push gitlab --delete feature/my-feature
+```
+
+### Merge Rules (CRITICAL)
+
+- **ALWAYS use `--no-ff`** when merging branches into master
+- Never fast-forward — merge commits preserve branch topology in the graph
+- Merge commit message: `Merge branch '<branch-name>'`
+
+### Commit Messages
+
+Follow conventional commits style:
+- `feat:` new feature
+- `fix:` bug fix
+- `fix(ci):` CI/CD fix
+- Lowercase, imperative mood, concise (1-2 lines)
+
+### GitLab CI
+
+- CI runs on all branches (push)
+- Pipeline stages: `lint` → `test` → `build` → `package`
+- All checks must pass before merge:
+  - `cargo test --all`
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --all --all-targets -- --deny warnings`
+- GitLab default branch: `master`
+- Pipeline token: stored in GitLab project variables
 
 ## Key Patterns
 
