@@ -97,9 +97,9 @@ build:macos-amd64:
     - macOS
   extends: .rust_cache
   script:
-    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env"
+    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env" || true
     - export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-    - which cargo || (echo "Rust not installed - please install with: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" && exit 1)
+    - cargo --version
     - cargo build --release --locked
     - strip target/release/${PACKAGE_NAME}
   artifacts:
@@ -116,9 +116,9 @@ build:macos-arm64:
     - macOS
   extends: .rust_cache
   script:
-    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env"
+    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env" || true
     - export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-    - which cargo || (echo "Rust not installed - please install with: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" && exit 1)
+    - cargo --version
     - cargo build --release --locked
     - strip target/release/${PACKAGE_NAME}
   artifacts:
