@@ -16,6 +16,8 @@ pub enum PipelineStatus {
     Scheduled,
 }
 
+const SPINNER_FRAMES: &[&str] = &["◜", "◠", "◝", "◞", "◡", "◟"];
+
 impl PipelineStatus {
     pub fn symbol(&self) -> &'static str {
         match self {
@@ -27,6 +29,20 @@ impl PipelineStatus {
             Self::Skipped => "⊘",
             Self::Manual => "▶",
             Self::Created | Self::Scheduled => "◯",
+        }
+    }
+
+    pub fn animated_symbol(&self, tick: u8) -> &'static str {
+        match self {
+            Self::Running => {
+                let frame = (tick as usize / 4) % SPINNER_FRAMES.len();
+                SPINNER_FRAMES[frame]
+            }
+            Self::Pending | Self::WaitingForResource | Self::Preparing => {
+                let frame = (tick as usize / 6) % SPINNER_FRAMES.len();
+                SPINNER_FRAMES[frame]
+            }
+            _ => self.symbol(),
         }
     }
 

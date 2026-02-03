@@ -64,12 +64,15 @@ impl PipelineViewState {
             };
             self.cache_result(sha.clone(), cached);
         }
+        let same_sha = self.current_sha == sha;
         self.current_sha = sha;
         self.details = details;
-        self.selected_stage = 0;
-        self.selected_job = 0;
-        self.scroll_x = 0;
-        self.scroll_y = 0;
+        if !same_sha {
+            self.selected_stage = 0;
+            self.selected_job = 0;
+            self.scroll_x = 0;
+            self.scroll_y = 0;
+        }
         self.error = None;
         self.loading = false;
     }
@@ -340,7 +343,7 @@ fn render_stage(
 
     let header = format!(
         "{} {}",
-        stage_status.symbol(),
+        stage_status.animated_symbol(tick),
         truncate_str(&stage.name, width.saturating_sub(4) as usize)
     );
     buf.set_string(x + 1, y, &header, status_style);
@@ -361,7 +364,12 @@ fn render_stage(
         let prefix = if is_selected { "▸" } else { " " };
 
         let job_name = truncate_str(&job.name, width.saturating_sub(5) as usize);
-        let job_line = format!("{}{} {}", prefix, job.status.symbol(), job_name);
+        let job_line = format!(
+            "{}{} {}",
+            prefix,
+            job.status.animated_symbol(tick),
+            job_name
+        );
 
         let line_style = if is_selected {
             highlight_style.patch(job_status_style)
@@ -404,7 +412,7 @@ impl StatefulWidget for PipelineView<'_> {
             return;
         }
 
-        if state.loading {
+        if state.loading && state.details.is_none() {
             let msg = "Loading pipeline...";
             let x = inner_area.left() + (inner_area.width.saturating_sub(msg.len() as u16)) / 2;
             let y = inner_area.top() + inner_area.height / 2;

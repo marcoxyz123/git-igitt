@@ -930,12 +930,25 @@ impl App {
         for commit_info in graph.commits.iter().take(limit) {
             let sha = commit_info.oid.to_string();
 
-            if self.graph_state.pipeline_statuses.contains_key(&sha)
-                || self.pending_pipeline_requests.contains(&sha)
-                || self.pipeline_state.get_cached(&sha).is_some()
-            {
+            if self.pending_pipeline_requests.contains(&sha) {
                 continue;
             }
+
+            let should_refetch = match self.graph_state.pipeline_statuses.get(&sha) {
+                Some(status) => status.is_active(),
+                None => match self.pipeline_state.get_cached(&sha) {
+                    Some(CachedPipeline::NotFound) => true,
+                    Some(CachedPipeline::Found(_)) => false,
+                    Some(CachedPipeline::Error(_)) => false,
+                    None => true,
+                },
+            };
+
+            if !should_refetch {
+                continue;
+            }
+
+            self.pipeline_state.invalidate_cache(&sha);
 
             self.pending_pipeline_requests.insert(sha.clone());
             let _ = tx.send(PipelineRequest {
