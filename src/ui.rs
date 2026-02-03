@@ -126,9 +126,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let show_pipeline = app.show_pipeline || app.active_view == ActiveView::Pipeline;
 
         let main_area = if show_pipeline {
+            let multirow = app
+                .pipeline_state
+                .needs_multirow(f.area().width.saturating_sub(4));
+            let (graph_pct, pipeline_pct) = if multirow { (35, 65) } else { (50, 50) };
             let vertical_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .constraints(
+                    [
+                        Constraint::Percentage(graph_pct),
+                        Constraint::Percentage(pipeline_pct),
+                    ]
+                    .as_ref(),
+                )
                 .split(f.area());
             draw_pipeline(f, vertical_chunks[1], app);
             vertical_chunks[0]
@@ -507,13 +517,29 @@ fn style_diff_line<'a>(
 }
 
 fn draw_pipeline(f: &mut Frame, target: Rect, app: &mut App) {
+    let has_log = !app.pipeline_state.job_log.is_empty()
+        || app.pipeline_state.job_log_loading
+        || app.pipeline_state.job_log_error.is_some();
+
+    let chunks = if has_log {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .split(target)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(100)])
+            .split(target)
+    };
+
     let mut block = Block::default().borders(Borders::ALL).title(create_title(
         "Pipeline",
-        " P=toggle ",
+        " P=toggle L=log ",
         app.color,
     ));
 
-    if app.active_view == ActiveView::Pipeline {
+    if app.active_view == ActiveView::Pipeline && !app.pipeline_state.job_log_focused {
         block = block.border_type(BorderType::Thick);
     }
 
@@ -523,7 +549,114 @@ fn draw_pipeline(f: &mut Frame, target: Rect, app: &mut App) {
         pipeline = pipeline.highlight_style(Style::default().add_modifier(Modifier::BOLD));
     }
 
-    f.render_stateful_widget(pipeline, target, &mut app.pipeline_state);
+    f.render_stateful_widget(pipeline, chunks[0], &mut app.pipeline_state);
+
+    if has_log && chunks.len() > 1 {
+        draw_job_log(f, chunks[1], app);
+    }
+}
+
+fn draw_job_log(f: &mut Frame, target: Rect, app: &mut App) {
+    let job_name = app
+        .pipeline_state
+        .details
+        .as_ref()
+        .and_then(|d| d.stages.get(app.pipeline_state.selected_stage))
+        .and_then(|s| s.jobs.get(app.pipeline_state.selected_job))
+        .map(|j| j.name.clone())
+        .unwrap_or_else(|| "Job Log".to_string());
+
+    let title = format!(" {} ", job_name);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(create_title(&title, " C=copy ", app.color));
+
+    if app.active_view == ActiveView::Pipeline && app.pipeline_state.job_log_focused {
+        block = block.border_type(BorderType::Thick);
+    }
+
+    let inner = block.inner(target);
+    f.render_widget(block, target);
+
+    if inner.width < 1 || inner.height < 1 {
+        return;
+    }
+
+    if app.pipeline_state.job_log.is_empty() || app.pipeline_state.job_log_loading {
+        return;
+    }
+
+    if let Some(error) = &app.pipeline_state.job_log_error {
+        let msg = format!("Error: {}", error);
+        f.render_widget(
+            Paragraph::new(msg).style(Style::default().fg(theme::ERROR)),
+            inner,
+        );
+        return;
+    }
+
+    let total_lines = app.pipeline_state.job_log.len();
+    let line_num_width = total_lines.max(1).to_string().len() as u16;
+    let ts_width: u16 = 8;
+    let gutter_width = line_num_width + 1 + ts_width + 2;
+    let dim_style = Style::default().fg(theme::TEXT_DIM);
+    let duration_style = Style::default().fg(theme::BORDER);
+
+    let visible_lines = inner.height as usize;
+    app.pipeline_state.job_log_visible_height = inner.height;
+
+    let max_scroll = total_lines.saturating_sub(visible_lines) as u16;
+    if app.pipeline_state.job_log_scroll > max_scroll {
+        app.pipeline_state.job_log_scroll = max_scroll;
+    }
+    let scroll = app.pipeline_state.job_log_scroll as usize;
+
+    let lines: Vec<Line> = app
+        .pipeline_state
+        .job_log
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_lines)
+        .map(|(idx, log_line)| {
+            let line_num = format!("{:>width$}", idx + 1, width = line_num_width as usize);
+            let ts = log_line.timestamp.as_deref().unwrap_or("        ");
+
+            let mut spans = vec![
+                Span::styled(line_num, dim_style),
+                Span::raw(" "),
+                Span::styled(ts.to_string(), dim_style),
+                Span::raw("  "),
+            ];
+
+            for (text, style) in &log_line.styled {
+                spans.push(Span::styled(text.clone(), *style));
+            }
+
+            let content_len: u16 = log_line.styled.iter().map(|(t, _)| t.len() as u16).sum();
+
+            if let Some(dur) = &log_line.duration {
+                let available = inner
+                    .width
+                    .saturating_sub(gutter_width + content_len + dur.len() as u16 + 1);
+                if available > 0 {
+                    spans.push(Span::raw(" ".repeat(available as usize)));
+                }
+                spans.push(Span::styled(dur.clone(), duration_style));
+            } else {
+                let used = gutter_width + content_len;
+                let pad = inner.width.saturating_sub(used);
+                if pad > 0 {
+                    spans.push(Span::raw(" ".repeat(pad as usize)));
+                }
+            }
+
+            Line::from(spans)
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
 }
 
 fn draw_models(f: &mut Frame, target: Rect, color: bool, state: &mut ModelListState) {

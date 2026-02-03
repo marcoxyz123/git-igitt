@@ -1,5 +1,4 @@
 use crate::gitlab::models::PipelineStatus;
-use crate::theme;
 use crate::util::ctrl_chars::CtrlChars;
 use crate::widgets::branches_view::BranchItem;
 use crate::widgets::list::StatefulList;
@@ -32,39 +31,63 @@ pub struct GraphViewState {
 }
 
 impl GraphViewState {
-    pub fn pipeline_status_color(&self, commit_idx: usize) -> Option<Color> {
+    pub fn pipeline_info(&self, commit_idx: usize) -> Option<(PipelineStatus, u8)> {
         let graph = self.graph.as_ref()?;
         let commit_info = graph.commits.get(commit_idx)?;
         let sha = commit_info.oid.to_string();
         let status = self.pipeline_statuses.get(&sha)?;
-        Some(pipeline_status_to_color(*status, self.animation_tick))
+        Some((*status, self.animation_tick))
     }
 }
 
-fn pulse_color(base_r: u8, base_g: u8, base_b: u8, tick: u8) -> Color {
-    let phase = (tick as f32 / 255.0) * std::f32::consts::PI * 2.0;
-    let factor = (phase.sin() + 1.0) / 2.0;
-    let bright_factor = 0.3 + (factor * 0.7);
-    Color::Rgb(
-        (base_r as f32 * bright_factor) as u8,
-        (base_g as f32 * bright_factor) as u8,
-        (base_b as f32 * bright_factor) as u8,
-    )
-}
-
-fn pipeline_status_to_color(status: PipelineStatus, tick: u8) -> Color {
+fn pipeline_base_color(status: PipelineStatus) -> (u8, u8, u8) {
     match status {
-        PipelineStatus::Success => theme::aurora::NORD14,
+        PipelineStatus::Success => (163, 190, 140),
         PipelineStatus::Running | PipelineStatus::Pending | PipelineStatus::Preparing => {
-            pulse_color(94, 129, 172, tick)
+            (94, 129, 172)
         }
-        PipelineStatus::Failed => theme::aurora::NORD11,
-        PipelineStatus::Canceled => theme::frost::NORD7,
+        PipelineStatus::Failed => (191, 97, 106),
+        PipelineStatus::Canceled | PipelineStatus::Canceling => (136, 192, 208),
         PipelineStatus::Skipped | PipelineStatus::Manual | PipelineStatus::WaitingForResource => {
-            theme::aurora::NORD12
+            (208, 135, 112)
         }
-        PipelineStatus::Created | PipelineStatus::Scheduled => theme::snow_storm::NORD6,
+        PipelineStatus::Created | PipelineStatus::Scheduled => (216, 222, 233),
     }
+}
+
+fn pipeline_status_to_color(status: PipelineStatus) -> Color {
+    let (r, g, b) = pipeline_base_color(status);
+    Color::Rgb(r, g, b)
+}
+
+fn sweep_color(
+    base_r: u8,
+    base_g: u8,
+    base_b: u8,
+    char_pos: u16,
+    total_chars: u16,
+    tick: u8,
+) -> Color {
+    let phase = (tick as f32 / 255.0) * 2.0;
+    let sweep_pos = if phase < 1.0 {
+        phase * (total_chars as f32 + 2.0) - 1.0
+    } else {
+        (2.0 - phase) * (total_chars as f32 + 2.0) - 1.0
+    };
+
+    let dist = (char_pos as f32 - sweep_pos).abs();
+    let glow = (1.0 - dist / 2.5).max(0.0);
+    let glow = glow * glow;
+
+    let mix = |base: u8, target: u8, t: f32| -> u8 {
+        (base as f32 + (target as f32 - base as f32) * t).clamp(0.0, 255.0) as u8
+    };
+
+    Color::Rgb(
+        mix(base_r, 236, glow),
+        mix(base_g, 239, glow),
+        mix(base_b, 244, glow),
+    )
 }
 
 impl GraphViewState {
@@ -286,11 +309,11 @@ impl StatefulWidget for GraphView<'_> {
             let max_element_width = (list_area.width - (elem_x - x)) as usize;
 
             let commit_info = state.commit_index_for_line(i).and_then(|commit_idx| {
-                let color = state.pipeline_status_color(commit_idx)?;
+                let (status, tick) = state.pipeline_info(commit_idx)?;
                 let graph = state.graph.as_ref()?;
                 let info = graph.commits.get(commit_idx)?;
                 let sha = &info.oid.to_string()[..SHA_LENGTH as usize];
-                Some((sha.to_string(), color))
+                Some((sha.to_string(), status, tick))
             });
 
             let mut body = CtrlChars::parse(graph_item).into_text();
@@ -310,7 +333,7 @@ impl StatefulWidget for GraphView<'_> {
                 }
             }
 
-            if let Some((sha, color)) = commit_info {
+            if let Some((sha, status, tick)) = commit_info {
                 for search_x in elem_x..list_area.right() {
                     let mut found = true;
                     for (offset, sha_char) in sha.chars().enumerate() {
@@ -326,15 +349,36 @@ impl StatefulWidget for GraphView<'_> {
                         }
                     }
                     if found {
-                        buf.set_style(
-                            Rect {
-                                x: search_x,
-                                y,
-                                width: SHA_LENGTH,
-                                height: 1,
-                            },
-                            Style::default().fg(color),
-                        );
+                        let (base_r, base_g, base_b) = pipeline_base_color(status);
+                        if status.is_active() {
+                            for offset in 0..SHA_LENGTH {
+                                let cx = search_x + offset;
+                                if cx < list_area.right() {
+                                    let color = sweep_color(
+                                        base_r, base_g, base_b, offset, SHA_LENGTH, tick,
+                                    );
+                                    buf.set_style(
+                                        Rect {
+                                            x: cx,
+                                            y,
+                                            width: 1,
+                                            height: 1,
+                                        },
+                                        Style::default().fg(color),
+                                    );
+                                }
+                            }
+                        } else {
+                            buf.set_style(
+                                Rect {
+                                    x: search_x,
+                                    y,
+                                    width: SHA_LENGTH,
+                                    height: 1,
+                                },
+                                Style::default().fg(pipeline_status_to_color(status)),
+                            );
+                        }
                         break;
                     }
                 }

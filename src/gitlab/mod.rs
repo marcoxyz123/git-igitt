@@ -107,6 +107,36 @@ impl GitLabClient {
         let jobs = self.get_pipeline_jobs(project_id, pipeline.id)?;
         Ok(Some(PipelineDetails::from_jobs(pipeline, jobs)))
     }
+
+    pub fn get_job_trace(&self, project_id: &str, job_id: u64) -> Result<String, String> {
+        let url = format!(
+            "{}/api/v4/projects/{}/jobs/{}/trace",
+            self.base_url,
+            urlencoded(project_id),
+            job_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "PRIVATE-TOKEN",
+            HeaderValue::from_str(&self.token).unwrap_or_else(|_| HeaderValue::from_static("")),
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(headers)
+            .send()
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("GitLab API error: {}", response.status()));
+        }
+
+        response
+            .text()
+            .map_err(|e| format!("Failed to read trace: {}", e))
+    }
 }
 
 fn urlencoded(s: &str) -> String {

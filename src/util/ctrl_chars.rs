@@ -2,7 +2,7 @@ use std::fmt;
 
 use muncher::Muncher;
 use ratatui::style::Style;
-use ratatui::text::Text;
+use ratatui::text::{Line, Span, Text};
 
 use crate::theme;
 
@@ -105,7 +105,7 @@ impl CtrlChunk {
         } else {
             return Text::raw(self.text);
         }
-        Text::styled(self.text, style)
+        Text::from(Line::from(Span::styled(self.text, style)))
     }
 }
 

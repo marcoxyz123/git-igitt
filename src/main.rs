@@ -20,8 +20,8 @@ use git_igitt::gitlab::GitLabClient;
 use git_igitt::settings::AppSettings;
 use git_igitt::{
     app::{
-        ActiveView, App, CurrentBranches, PipelineRequest, PipelineResponse,
-        DEFAULT_PIPELINE_LOAD_LIMIT,
+        ActiveView, App, CurrentBranches, JobLogRequest, JobLogResponse, PipelineRequest,
+        PipelineResponse, DEFAULT_PIPELINE_LOAD_LIMIT,
     },
     dialogs::FileDialog,
     ui,
@@ -42,8 +42,10 @@ use std::{
 
 const REPO_CONFIG_FILE: &str = "git-graph.toml";
 const CHECK_CHANGE_RATE: u64 = 2000;
-const PIPELINE_REFRESH_RATE: u64 = 5000;
+const PIPELINE_REFRESH_RATE: u64 = 3000;
 const ANIMATION_TICK_RATE: u64 = 50;
+const JOB_LOG_REFRESH_RATE: u64 = 1000;
+const HEAD_PIPELINE_RECHECK_RATE: u64 = 5000;
 const INITIAL_KEY_REPEAT_TIME: u128 = 100;
 const MIN_KEY_REPEAT_TIME: u128 = 50;
 
@@ -485,12 +487,40 @@ fn run(
     let (pipeline_request_tx, pipeline_request_rx) = mpsc::channel::<PipelineRequest>();
     let (pipeline_response_tx, pipeline_response_rx) = mpsc::channel::<PipelineResponse>();
 
+    let batch_response_tx = pipeline_response_tx.clone();
     thread::spawn(move || {
         while let Ok(req) = pipeline_request_rx.recv() {
             let result = GitLabClient::new(&req.base_url, &req.token)
                 .and_then(|client| client.get_pipeline_details(&req.project_id, &req.sha));
+            let _ = batch_response_tx.send(PipelineResponse {
+                sha: req.sha,
+                result,
+            });
+        }
+    });
+
+    let (head_pipeline_tx, head_pipeline_rx) = mpsc::channel::<PipelineRequest>();
+    thread::spawn(move || {
+        while let Ok(req) = head_pipeline_rx.recv() {
+            let result = GitLabClient::new(&req.base_url, &req.token)
+                .and_then(|client| client.get_pipeline_details(&req.project_id, &req.sha));
             let _ = pipeline_response_tx.send(PipelineResponse {
                 sha: req.sha,
+                result,
+            });
+        }
+    });
+
+    let (job_log_request_tx, job_log_request_rx) = mpsc::channel::<JobLogRequest>();
+    let (job_log_response_tx, job_log_response_rx) = mpsc::channel::<JobLogResponse>();
+
+    thread::spawn(move || {
+        while let Ok(req) = job_log_request_rx.recv() {
+            let result = GitLabClient::new(&req.base_url, &req.token)
+                .and_then(|client| client.get_job_trace(&req.project_id, req.job_id));
+            let _ = job_log_response_tx.send(JobLogResponse {
+                job_id: req.job_id,
+                job_name: req.job_name,
                 result,
             });
         }
@@ -519,6 +549,8 @@ fn run(
             let mut app = create_app(repository, &mut settings, &app_settings, model, max_commits)?;
             app.pipeline_load_limit = pipeline_load_limit;
             app.set_pipeline_channel(pipeline_request_tx.clone());
+            app.set_head_pipeline_channel(head_pipeline_tx.clone());
+            app.set_job_log_channel(job_log_request_tx.clone());
             app.request_batch_pipelines();
             Some(app)
         }
@@ -528,6 +560,9 @@ fn run(
 
     let next_repo_refresh = &Cell::new(Instant::now() + repo_refresh_interval);
     let next_pipeline_refresh: &Cell<Option<Instant>> = &Cell::new(None);
+    let next_job_log_refresh: &Cell<Option<Instant>> = &Cell::new(None);
+    let next_head_recheck =
+        &Cell::new(Instant::now() + Duration::from_millis(HEAD_PIPELINE_RECHECK_RATE));
     let next_animation_tick = &Cell::new(Instant::now() + animation_interval);
     let next_diff_update: &Cell<Option<Instant>> = &Cell::new(None);
     let next_file_update: &Cell<Option<Instant>> = &Cell::new(None);
@@ -543,6 +578,10 @@ fn run(
             if let Some(next) = next_pipeline_refresh.get() {
                 next_event_time = next.min(next_event_time)
             }
+            if let Some(next) = next_job_log_refresh.get() {
+                next_event_time = next.min(next_event_time)
+            }
+            next_event_time = next_event_time.min(next_head_recheck.get());
             if let Some(next) = next_diff_update.get() {
                 next_event_time = next.min(next_event_time)
             }
@@ -714,6 +753,9 @@ fn run(
                             KeyCode::Char('l') => {
                                 if event.modifiers.contains(KeyModifiers::CONTROL) {
                                     app.toggle_line_numbers()?;
+                                } else if app.active_view == ActiveView::Pipeline {
+                                    app.pipeline_state.job_log_focused =
+                                        !app.pipeline_state.job_log_focused;
                                 } else {
                                     app.toggle_layout();
                                 }
@@ -721,6 +763,25 @@ fn run(
                             KeyCode::Char('w') => {
                                 if event.modifiers.contains(KeyModifiers::CONTROL) {
                                     app.toggle_line_wrap()?;
+                                }
+                            }
+                            KeyCode::Char('c') => {
+                                if app.active_view == ActiveView::Pipeline
+                                    && app.pipeline_state.job_log_focused
+                                    && !app.pipeline_state.job_log.is_empty()
+                                {
+                                    let text = app.pipeline_state.job_log_as_text();
+                                    if let Ok(mut child) = std::process::Command::new("pbcopy")
+                                        .stdin(std::process::Stdio::piped())
+                                        .spawn()
+                                    {
+                                        if let Some(stdin) = child.stdin.take() {
+                                            use std::io::Write;
+                                            let mut stdin = stdin;
+                                            let _ = stdin.write_all(text.as_bytes());
+                                        }
+                                        let _ = child.wait();
+                                    }
                                 }
                             }
                             KeyCode::Char('b') => app.toggle_branches(),
@@ -786,11 +847,22 @@ fn run(
                                     }
                                 } else {
                                     app.toggle_pipeline();
-                                    if app.show_pipeline && app.pipeline_state.is_running() {
-                                        next_pipeline_refresh
-                                            .set(Some(Instant::now() + pipeline_refresh_interval));
-                                    } else if !app.show_pipeline {
+                                    if app.show_pipeline {
+                                        app.request_job_log();
+                                        if app.pipeline_state.is_running() {
+                                            next_pipeline_refresh.set(Some(
+                                                Instant::now() + pipeline_refresh_interval,
+                                            ));
+                                        }
+                                        if app.pipeline_state.selected_job_is_running() {
+                                            next_job_log_refresh.set(Some(
+                                                Instant::now()
+                                                    + Duration::from_millis(JOB_LOG_REFRESH_RATE),
+                                            ));
+                                        }
+                                    } else {
                                         next_pipeline_refresh.set(None);
+                                        next_job_log_refresh.set(None);
                                     }
                                 }
                             }
@@ -874,15 +946,37 @@ fn run(
                             }
                             next_repo_refresh.set(now + repo_refresh_interval);
                         }
+                        if next_head_recheck.get() <= now {
+                            app.recheck_head_pipeline();
+                            next_head_recheck
+                                .set(now + Duration::from_millis(HEAD_PIPELINE_RECHECK_RATE));
+                        }
                         while let Ok(response) = pipeline_response_rx.try_recv() {
-                            let was_running_on_head = app.has_running_pipeline_on_head();
+                            let prev_job_id = app.pipeline_state.get_selected_job_id();
                             app.handle_pipeline_response(response);
-                            if !was_running_on_head && app.has_running_pipeline_on_head() {
+                            if !app.show_pipeline && app.has_running_pipeline_on_head() {
                                 app.show_pipeline = true;
+                                app.active_view = ActiveView::Pipeline;
                                 app.request_pipeline();
                             }
                             if app.pipeline_state.is_running() {
                                 next_pipeline_refresh.set(Some(now + pipeline_refresh_interval));
+                            }
+                            let new_job_id = app.pipeline_state.get_selected_job_id();
+                            if app.show_pipeline && prev_job_id != new_job_id {
+                                app.request_job_log();
+                                if app.pipeline_state.selected_job_is_running() {
+                                    next_job_log_refresh.set(Some(
+                                        now + Duration::from_millis(JOB_LOG_REFRESH_RATE),
+                                    ));
+                                }
+                            }
+                        }
+                        while let Ok(response) = job_log_response_rx.try_recv() {
+                            app.handle_job_log_response(response);
+                            if app.pipeline_state.selected_job_is_running() {
+                                next_job_log_refresh
+                                    .set(Some(now + Duration::from_millis(JOB_LOG_REFRESH_RATE)));
                             }
                         }
                         if let Some(next) = next_pipeline_refresh.get() {
@@ -894,6 +988,19 @@ fn run(
                                         .set(Some(now + pipeline_refresh_interval));
                                 } else {
                                     next_pipeline_refresh.set(None);
+                                }
+                            }
+                        }
+                        if let Some(next) = next_job_log_refresh.get() {
+                            if next <= now {
+                                if app.show_pipeline && app.pipeline_state.selected_job_is_running()
+                                {
+                                    app.request_job_log();
+                                    next_job_log_refresh.set(Some(
+                                        now + Duration::from_millis(JOB_LOG_REFRESH_RATE),
+                                    ));
+                                } else {
+                                    next_job_log_refresh.set(None);
                                 }
                             }
                         }
@@ -1017,6 +1124,10 @@ fn run(
                                             new_app.pipeline_load_limit = pipeline_load_limit;
                                             new_app
                                                 .set_pipeline_channel(pipeline_request_tx.clone());
+                                            new_app.set_head_pipeline_channel(
+                                                head_pipeline_tx.clone(),
+                                            );
+                                            new_app.set_job_log_channel(job_log_request_tx.clone());
                                             new_app.request_batch_pipelines();
                                             app = Some(new_app);
                                         }

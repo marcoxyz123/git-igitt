@@ -11,6 +11,7 @@ pub enum PipelineStatus {
     Success,
     Failed,
     Canceled,
+    Canceling,
     Skipped,
     Manual,
     Scheduled,
@@ -25,7 +26,7 @@ impl PipelineStatus {
             Self::Running => "◐",
             Self::Pending | Self::WaitingForResource | Self::Preparing => "○",
             Self::Failed => "✕",
-            Self::Canceled => "⊘",
+            Self::Canceled | Self::Canceling => "⊘",
             Self::Skipped => "⊘",
             Self::Manual => "▶",
             Self::Created | Self::Scheduled => "◯",
@@ -65,6 +66,7 @@ impl std::fmt::Display for PipelineStatus {
             Self::Success => "success",
             Self::Failed => "failed",
             Self::Canceled => "canceled",
+            Self::Canceling => "canceling",
             Self::Skipped => "skipped",
             Self::Manual => "manual",
             Self::Scheduled => "scheduled",
@@ -155,6 +157,18 @@ impl Stage {
             PipelineStatus::Created
         }
     }
+
+    pub fn has_mixed_failure(&self) -> bool {
+        let has_real_failure = self
+            .jobs
+            .iter()
+            .any(|j| j.status == PipelineStatus::Failed && !j.allow_failure.unwrap_or(false));
+        let has_non_failure = self
+            .jobs
+            .iter()
+            .any(|j| j.status != PipelineStatus::Failed || j.allow_failure.unwrap_or(false));
+        has_real_failure && has_non_failure
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -166,7 +180,6 @@ pub struct PipelineDetails {
 impl PipelineDetails {
     pub fn from_jobs(pipeline: Pipeline, jobs: Vec<Job>) -> Self {
         let mut stages: Vec<Stage> = Vec::new();
-        let stage_order = ["build", "test", "deploy", "release"];
 
         for job in jobs {
             let stage_name = job.stage.clone();
@@ -179,16 +192,7 @@ impl PipelineDetails {
             }
         }
 
-        stages.sort_by(|a, b| {
-            let a_idx = stage_order.iter().position(|&s| s == a.name);
-            let b_idx = stage_order.iter().position(|&s| s == b.name);
-            match (a_idx, b_idx) {
-                (Some(ai), Some(bi)) => ai.cmp(&bi),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.name.cmp(&b.name),
-            }
-        });
+        stages.sort_by_key(|s| s.jobs.iter().map(|j| j.id).min().unwrap_or(u64::MAX));
 
         Self {
             pipeline: Some(pipeline),
