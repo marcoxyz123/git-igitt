@@ -51,6 +51,7 @@ const MIN_KEY_REPEAT_TIME: u128 = 50;
 
 enum Event<I> {
     Input(I),
+    Resize,
     Update,
 }
 
@@ -607,7 +608,7 @@ fn run(
                         if sx != sx_old || sy != sy_old {
                             sx_old = sx;
                             sy_old = sy;
-                            return Event::Update;
+                            return Event::Resize;
                         }
                     }
                     _ => {}
@@ -632,97 +633,115 @@ fn run(
             }
             let mut open_file = false;
             if app.error_message.is_some() {
-                if let Event::Input(event) = next_event() {
-                    match event.code {
-                        KeyCode::Enter | KeyCode::Esc => {
-                            app.clear_error();
+                match next_event() {
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Enter | KeyCode::Esc => {
+                                app.clear_error();
+                            }
+                            KeyCode::Char('q') => {
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                terminal.show_cursor()?;
+                                break;
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('q') => {
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                            terminal.show_cursor()?;
-                            break;
-                        }
-                        _ => {}
+                        needs_redraw = true;
                     }
-                    needs_redraw = true;
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
+                    Event::Update => {}
                 }
             }
             let mut reload_diffs = false;
             let mut reload_file = false;
             let mut reset_scroll = true;
             if app.active_view == ActiveView::GitLabConfig {
-                if let Event::Input(event) = next_event() {
-                    match event.code {
-                        KeyCode::Char(c) => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.insert_char(c);
-                            }
-                        }
-                        KeyCode::Backspace => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.delete_char();
-                            }
-                        }
-                        KeyCode::Delete => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.delete_forward();
-                            }
-                        }
-                        KeyCode::Left => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_left();
-                            }
-                        }
-                        KeyCode::Right => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_right();
-                            }
-                        }
-                        KeyCode::Home => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_home();
-                            }
-                        }
-                        KeyCode::End => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_end();
-                            }
-                        }
-                        KeyCode::Enter => {
-                            if let Some(dialog) = &app.gitlab_config_dialog {
-                                if dialog.is_valid() {
-                                    if let Err(err) = app.save_gitlab_config() {
-                                        app.set_error(err);
-                                    } else {
-                                        app.show_pipeline = true;
-                                        app.request_pipeline();
-                                    }
-                                } else {
-                                    app.set_error("Please enter an access token".to_string());
+                match next_event() {
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Char(c) => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.insert_char(c);
                                 }
                             }
+                            KeyCode::Backspace => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.delete_char();
+                                }
+                            }
+                            KeyCode::Delete => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.delete_forward();
+                                }
+                            }
+                            KeyCode::Left => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_left();
+                                }
+                            }
+                            KeyCode::Right => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_right();
+                                }
+                            }
+                            KeyCode::Home => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_home();
+                                }
+                            }
+                            KeyCode::End => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_end();
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if let Some(dialog) = &app.gitlab_config_dialog {
+                                    if dialog.is_valid() {
+                                        if let Err(err) = app.save_gitlab_config() {
+                                            app.set_error(err);
+                                        } else {
+                                            app.show_pipeline = true;
+                                            app.request_pipeline();
+                                        }
+                                    } else {
+                                        app.set_error("Please enter an access token".to_string());
+                                    }
+                                }
+                            }
+                            KeyCode::Esc => {
+                                app.close_gitlab_config();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Esc => {
-                            app.close_gitlab_config();
-                        }
-                        _ => {}
+                        needs_redraw = true;
                     }
-                    needs_redraw = true;
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
+                    Event::Update => {}
                 }
             } else if app.active_view == ActiveView::Search {
-                if let Event::Input(event) = next_event() {
-                    match event.code {
-                        KeyCode::Char(c) => app.character_entered(c),
-                        KeyCode::Esc => reload_file = app.on_esc()?,
-                        KeyCode::Enter | KeyCode::F(3) => {
-                            reload_diffs =
-                                app.on_enter(event.modifiers.contains(KeyModifiers::CONTROL))?
+                match next_event() {
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Char(c) => app.character_entered(c),
+                            KeyCode::Esc => reload_file = app.on_esc()?,
+                            KeyCode::Enter | KeyCode::F(3) => {
+                                reload_diffs =
+                                    app.on_enter(event.modifiers.contains(KeyModifiers::CONTROL))?
+                            }
+                            KeyCode::Backspace => reload_diffs = app.on_backspace()?,
+                            _ => {}
                         }
-                        KeyCode::Backspace => reload_diffs = app.on_backspace()?,
-                        _ => {}
+                        needs_redraw = true;
                     }
-                    needs_redraw = true;
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
+                    Event::Update => {}
                 }
             } else {
                 match next_event() {
@@ -945,6 +964,9 @@ fn run(
                         }
                         needs_redraw = true;
                     }
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
                     Event::Update => {
                         let now = Instant::now();
 
@@ -1120,6 +1142,9 @@ fn run(
                         }
                         needs_redraw = true;
                     }
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
                     Event::Update => {
                         let now = Instant::now();
                         if next_repo_refresh.get() <= now {
@@ -1198,6 +1223,9 @@ fn run(
                             }
                             _ => {}
                         }
+                        needs_redraw = true;
+                    }
+                    Event::Resize => {
                         needs_redraw = true;
                     }
                     Event::Update => {
