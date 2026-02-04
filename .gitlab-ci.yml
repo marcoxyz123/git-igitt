@@ -194,9 +194,25 @@ package:macos-amd64:
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.tar.gz \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.tar.gz"
+    # Build .pkg installer (installs to /usr/local/bin)
+    - mkdir -p payload/usr/local/bin
+    - cp ${PACKAGE_NAME} payload/usr/local/bin/
+    - chmod 755 payload/usr/local/bin/${PACKAGE_NAME}
+    - |
+      pkgbuild \
+        --root payload \
+        --identifier "sx.berger.${PACKAGE_NAME}" \
+        --version "${CI_COMMIT_REF_SLUG}" \
+        --install-location / \
+        ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.pkg
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.pkg \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.pkg"
   artifacts:
     paths:
       - dist/*.tar.gz
+      - dist/*.pkg
     expire_in: 1 week
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -217,9 +233,25 @@ package:macos-arm64:
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.tar.gz \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.tar.gz"
+    # Build .pkg installer (installs to /usr/local/bin)
+    - mkdir -p payload/usr/local/bin
+    - cp ${PACKAGE_NAME} payload/usr/local/bin/
+    - chmod 755 payload/usr/local/bin/${PACKAGE_NAME}
+    - |
+      pkgbuild \
+        --root payload \
+        --identifier "sx.berger.${PACKAGE_NAME}" \
+        --version "${CI_COMMIT_REF_SLUG}" \
+        --install-location / \
+        ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.pkg
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.pkg \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.pkg"
   artifacts:
     paths:
       - dist/*.tar.gz
+      - dist/*.pkg
     expire_in: 1 week
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
