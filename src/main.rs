@@ -961,6 +961,7 @@ fn run(
                             app.tick_animation();
                             app.graph_state.animation_tick = app.animation_tick;
                             app.pipeline_state.animation_tick = app.animation_tick;
+                            next_animation_tick.set(now + animation_interval);
                             needs_redraw = true;
                         }
 
@@ -1070,15 +1071,14 @@ fn run(
                 ));
             }
 
-            if app.needs_animation() {
+            {
+                let now = Instant::now();
                 let next_anim = next_animation_tick.get();
-                let now = Instant::now();
-                if next_anim > now + animation_interval {
-                    next_animation_tick.set(now + animation_interval);
-                }
-            } else {
-                let now = Instant::now();
-                if next_animation_tick.get() < now + Duration::from_secs(60) {
+                if app.needs_animation() {
+                    if next_anim <= now || next_anim > now + Duration::from_secs(60) {
+                        next_animation_tick.set(now + animation_interval);
+                    }
+                } else if next_anim < now + Duration::from_secs(60) {
                     next_animation_tick.set(now + Duration::from_secs(86400));
                 }
             }

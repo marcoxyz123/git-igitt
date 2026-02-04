@@ -36,11 +36,11 @@ impl PipelineStatus {
     pub fn animated_symbol(&self, tick: u8) -> &'static str {
         match self {
             Self::Running => {
-                let frame = (tick as usize / 4) % SPINNER_FRAMES.len();
+                let frame = tick as usize % SPINNER_FRAMES.len();
                 SPINNER_FRAMES[frame]
             }
             Self::Pending | Self::WaitingForResource | Self::Preparing => {
-                let frame = (tick as usize / 6) % SPINNER_FRAMES.len();
+                let frame = (tick as usize / 2) % SPINNER_FRAMES.len();
                 SPINNER_FRAMES[frame]
             }
             _ => self.symbol(),
