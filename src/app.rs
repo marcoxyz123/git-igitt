@@ -1175,6 +1175,16 @@ impl App {
         !self.pending_pipeline_requests.is_empty()
     }
 
+    pub fn needs_animation(&self) -> bool {
+        if self.show_pipeline && (self.pipeline_state.is_running() || self.pipeline_state.loading) {
+            return true;
+        }
+        self.graph_state
+            .pipeline_statuses
+            .values()
+            .any(|s| s.is_active())
+    }
+
     fn get_selected_commit_sha(&self) -> Option<String> {
         let graph = self.graph_state.graph.as_ref()?;
         let selected_idx = self.graph_state.selected?;
