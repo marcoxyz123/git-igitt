@@ -91,26 +91,7 @@ build:linux-amd64-musl:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
 
-build:macos-amd64:
-  stage: build
-  tags:
-    - macOS
-  extends: .rust_cache
-  script:
-    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env" || true
-    - export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-    - cargo --version
-    - cargo build --release --locked
-    - strip target/release/${PACKAGE_NAME}
-  artifacts:
-    paths:
-      - target/release/${PACKAGE_NAME}
-    expire_in: 1 week
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH
-
-build:macos-arm64:
+build:macos:
   stage: build
   tags:
     - macOS
@@ -181,22 +162,24 @@ package:linux-amd64-musl:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
 
-package:macos-amd64:
+package:macos:
   stage: package
   tags:
     - macOS
   needs:
-    - job: build:macos-amd64
+    - job: build:macos
       artifacts: true
   script:
     - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    - ARCH=$(uname -m); if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
+    - echo "Building packages for macOS-${ARCH}"
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz -C dist ${PACKAGE_NAME}
+    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.tar.gz -C dist ${PACKAGE_NAME}
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz"
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.tar.gz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.tar.gz"
     - mkdir -p dist/payload/usr/local/bin
     - cp target/release/${PACKAGE_NAME} dist/payload/usr/local/bin/
     - chmod 755 dist/payload/usr/local/bin/${PACKAGE_NAME}
@@ -206,50 +189,11 @@ package:macos-amd64:
         --identifier "sx.berger.${PACKAGE_NAME}" \
         --version "${VERSION}" \
         --install-location / \
-        dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg
+        dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.pkg
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg"
-  artifacts:
-    paths:
-      - dist/*.tar.gz
-      - dist/*.pkg
-    expire_in: 1 week
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH
-
-package:macos-arm64:
-  stage: package
-  tags:
-    - macOS
-  needs:
-    - job: build:macos-arm64
-      artifacts: true
-  script:
-    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-    - mkdir -p dist
-    - cp target/release/${PACKAGE_NAME} dist/
-    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz -C dist ${PACKAGE_NAME}
-    - |
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz"
-    - mkdir -p dist/payload/usr/local/bin
-    - cp target/release/${PACKAGE_NAME} dist/payload/usr/local/bin/
-    - chmod 755 dist/payload/usr/local/bin/${PACKAGE_NAME}
-    - |
-      pkgbuild \
-        --root dist/payload \
-        --identifier "sx.berger.${PACKAGE_NAME}" \
-        --version "${VERSION}" \
-        --install-location / \
-        dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg
-    - |
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg"
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.pkg \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.pkg"
   artifacts:
     paths:
       - dist/*.tar.gz
