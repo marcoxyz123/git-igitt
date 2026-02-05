@@ -12,6 +12,8 @@ An interactive terminal application for browsing and visualizing Git history gra
 
 ![Pipeline view](img/pipeline.png)
 
+![Pipeline monitoring](img/pipeline.gif)
+
 ## Features
 
 * View structured Git history graphs directly in the terminal

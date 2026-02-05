@@ -43,7 +43,7 @@ use std::{
 const REPO_CONFIG_FILE: &str = "git-graph.toml";
 const CHECK_CHANGE_RATE: u64 = 2000;
 const PIPELINE_REFRESH_RATE: u64 = 3000;
-const ANIMATION_TICK_RATE: u64 = 50;
+const ANIMATION_TICK_RATE: u64 = 200;
 const JOB_LOG_REFRESH_RATE: u64 = 1000;
 const HEAD_PIPELINE_RECHECK_RATE: u64 = 5000;
 const INITIAL_KEY_REPEAT_TIME: u128 = 100;
@@ -51,6 +51,7 @@ const MIN_KEY_REPEAT_TIME: u128 = 50;
 
 enum Event<I> {
     Input(I),
+    Resize,
     Update,
 }
 
@@ -567,10 +568,11 @@ fn run(
     let next_job_log_refresh: &Cell<Option<Instant>> = &Cell::new(None);
     let next_head_recheck =
         &Cell::new(Instant::now() + Duration::from_millis(HEAD_PIPELINE_RECHECK_RATE));
-    let next_animation_tick = &Cell::new(Instant::now() + animation_interval);
+    let next_animation_tick = &Cell::new(Instant::now() + Duration::from_secs(86400));
     let next_diff_update: &Cell<Option<Instant>> = &Cell::new(None);
     let next_file_update: &Cell<Option<Instant>> = &Cell::new(None);
     let mut reset_diff_scroll = false;
+    let mut needs_redraw = true;
 
     let mut next_event = {
         let mut sx_old = 0;
@@ -606,7 +608,7 @@ fn run(
                         if sx != sx_old || sy != sy_old {
                             sx_old = sx;
                             sy_old = sy;
-                            return Event::Update;
+                            return Event::Resize;
                         }
                     }
                     _ => {}
@@ -625,97 +627,121 @@ fn run(
 
     loop {
         app = if let Some(mut app) = app.take() {
-            terminal.draw(|f| ui::draw(f, &mut app))?;
+            if needs_redraw {
+                terminal.draw(|f| ui::draw(f, &mut app))?;
+                needs_redraw = false;
+            }
             let mut open_file = false;
             if app.error_message.is_some() {
-                if let Event::Input(event) = next_event() {
-                    match event.code {
-                        KeyCode::Enter | KeyCode::Esc => {
-                            app.clear_error();
+                match next_event() {
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Enter | KeyCode::Esc => {
+                                app.clear_error();
+                            }
+                            KeyCode::Char('q') => {
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                terminal.show_cursor()?;
+                                break;
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('q') => {
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                            terminal.show_cursor()?;
-                            break;
-                        }
-                        _ => {}
+                        needs_redraw = true;
                     }
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
+                    Event::Update => {}
                 }
             }
             let mut reload_diffs = false;
             let mut reload_file = false;
             let mut reset_scroll = true;
             if app.active_view == ActiveView::GitLabConfig {
-                if let Event::Input(event) = next_event() {
-                    match event.code {
-                        KeyCode::Char(c) => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.insert_char(c);
-                            }
-                        }
-                        KeyCode::Backspace => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.delete_char();
-                            }
-                        }
-                        KeyCode::Delete => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.delete_forward();
-                            }
-                        }
-                        KeyCode::Left => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_left();
-                            }
-                        }
-                        KeyCode::Right => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_right();
-                            }
-                        }
-                        KeyCode::Home => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_home();
-                            }
-                        }
-                        KeyCode::End => {
-                            if let Some(dialog) = &mut app.gitlab_config_dialog {
-                                dialog.move_cursor_end();
-                            }
-                        }
-                        KeyCode::Enter => {
-                            if let Some(dialog) = &app.gitlab_config_dialog {
-                                if dialog.is_valid() {
-                                    if let Err(err) = app.save_gitlab_config() {
-                                        app.set_error(err);
-                                    } else {
-                                        app.show_pipeline = true;
-                                        app.request_pipeline();
-                                    }
-                                } else {
-                                    app.set_error("Please enter an access token".to_string());
+                match next_event() {
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Char(c) => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.insert_char(c);
                                 }
                             }
+                            KeyCode::Backspace => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.delete_char();
+                                }
+                            }
+                            KeyCode::Delete => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.delete_forward();
+                                }
+                            }
+                            KeyCode::Left => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_left();
+                                }
+                            }
+                            KeyCode::Right => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_right();
+                                }
+                            }
+                            KeyCode::Home => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_home();
+                                }
+                            }
+                            KeyCode::End => {
+                                if let Some(dialog) = &mut app.gitlab_config_dialog {
+                                    dialog.move_cursor_end();
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if let Some(dialog) = &app.gitlab_config_dialog {
+                                    if dialog.is_valid() {
+                                        if let Err(err) = app.save_gitlab_config() {
+                                            app.set_error(err);
+                                        } else {
+                                            app.show_pipeline = true;
+                                            app.request_pipeline();
+                                        }
+                                    } else {
+                                        app.set_error("Please enter an access token".to_string());
+                                    }
+                                }
+                            }
+                            KeyCode::Esc => {
+                                app.close_gitlab_config();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Esc => {
-                            app.close_gitlab_config();
-                        }
-                        _ => {}
+                        needs_redraw = true;
                     }
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
+                    Event::Update => {}
                 }
             } else if app.active_view == ActiveView::Search {
-                if let Event::Input(event) = next_event() {
-                    match event.code {
-                        KeyCode::Char(c) => app.character_entered(c),
-                        KeyCode::Esc => reload_file = app.on_esc()?,
-                        KeyCode::Enter | KeyCode::F(3) => {
-                            reload_diffs =
-                                app.on_enter(event.modifiers.contains(KeyModifiers::CONTROL))?
+                match next_event() {
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Char(c) => app.character_entered(c),
+                            KeyCode::Esc => reload_file = app.on_esc()?,
+                            KeyCode::Enter | KeyCode::F(3) => {
+                                reload_diffs =
+                                    app.on_enter(event.modifiers.contains(KeyModifiers::CONTROL))?
+                            }
+                            KeyCode::Backspace => reload_diffs = app.on_backspace()?,
+                            _ => {}
                         }
-                        KeyCode::Backspace => reload_diffs = app.on_backspace()?,
-                        _ => {}
+                        needs_redraw = true;
                     }
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
+                    Event::Update => {}
                 }
             } else {
                 match next_event() {
@@ -936,6 +962,10 @@ fn run(
                             }
                             _ => {}
                         }
+                        needs_redraw = true;
+                    }
+                    Event::Resize => {
+                        needs_redraw = true;
                     }
                     Event::Update => {
                         let now = Instant::now();
@@ -945,6 +975,7 @@ fn run(
                                 app.active_view =
                                     app.prev_active_view.take().unwrap_or(ActiveView::Graph);
                                 logo_dismiss_time.set(None);
+                                needs_redraw = true;
                             }
                         }
 
@@ -953,12 +984,14 @@ fn run(
                             app.graph_state.animation_tick = app.animation_tick;
                             app.pipeline_state.animation_tick = app.animation_tick;
                             next_animation_tick.set(now + animation_interval);
+                            needs_redraw = true;
                         }
 
                         if next_repo_refresh.get() <= now {
                             if app.graph_state.graph.is_some() && has_changed(&mut app)? {
                                 app = app.reload(&settings, max_commits)?;
                                 app.request_batch_pipelines();
+                                needs_redraw = true;
                             }
                             next_repo_refresh.set(now + repo_refresh_interval);
                         }
@@ -988,6 +1021,7 @@ fn run(
                                     ));
                                 }
                             }
+                            needs_redraw = true;
                         }
                         while let Ok(response) = job_log_response_rx.try_recv() {
                             app.handle_job_log_response(response);
@@ -995,6 +1029,7 @@ fn run(
                                 next_job_log_refresh
                                     .set(Some(now + Duration::from_millis(JOB_LOG_REFRESH_RATE)));
                             }
+                            needs_redraw = true;
                         }
                         if let Some(next) = next_pipeline_refresh.get() {
                             if next <= now {
@@ -1003,6 +1038,7 @@ fn run(
                                     app.request_pipeline();
                                     next_pipeline_refresh
                                         .set(Some(now + pipeline_refresh_interval));
+                                    needs_redraw = true;
                                 } else {
                                     next_pipeline_refresh.set(None);
                                 }
@@ -1025,12 +1061,14 @@ fn run(
                             if next <= now {
                                 reload_file = app.reload_diff_files()?;
                                 next_diff_update.set(None);
+                                needs_redraw = true;
                             }
                         }
                         if let Some(next) = next_file_update.get() {
                             if next <= now {
                                 app.file_changed(reset_diff_scroll)?;
                                 next_file_update.set(None);
+                                needs_redraw = true;
                             }
                         }
                     }
@@ -1055,6 +1093,18 @@ fn run(
                 ));
             }
 
+            {
+                let now = Instant::now();
+                let next_anim = next_animation_tick.get();
+                if app.needs_animation() {
+                    if next_anim <= now || next_anim > now + Duration::from_secs(60) {
+                        next_animation_tick.set(now + animation_interval);
+                    }
+                } else if next_anim < now + Duration::from_secs(60) {
+                    next_animation_tick.set(now + Duration::from_secs(86400));
+                }
+            }
+
             if open_file {
                 let prev = if let Some(graph) = &app.graph_state.graph {
                     graph.repository.path().parent().map(PathBuf::from)
@@ -1063,28 +1113,38 @@ fn run(
                 };
                 file_dialog.previous_app = Some(app);
                 file_dialog.selection_changed(prev)?;
+                needs_redraw = true;
                 None
             } else {
                 Some(app)
             }
         } else {
-            terminal.draw(|f| ui::draw_open_repo(f, &mut file_dialog))?;
+            if needs_redraw {
+                terminal.draw(|f| ui::draw_open_repo(f, &mut file_dialog))?;
+                needs_redraw = false;
+            }
 
             let mut app = None;
             if file_dialog.error_message.is_some() {
                 match next_event() {
-                    Event::Input(event) => match event.code {
-                        KeyCode::Enter | KeyCode::Esc => {
-                            file_dialog.clear_error();
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Enter | KeyCode::Esc => {
+                                file_dialog.clear_error();
+                            }
+                            KeyCode::Char('q') => {
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                terminal.show_cursor()?;
+                                break;
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('q') => {
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                            terminal.show_cursor()?;
-                            break;
-                        }
-                        _ => {}
-                    },
+                        needs_redraw = true;
+                    }
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
                     Event::Update => {
                         let now = Instant::now();
                         if next_repo_refresh.get() <= now {
@@ -1094,69 +1154,80 @@ fn run(
                 }
             } else {
                 match next_event() {
-                    Event::Input(event) => match event.code {
-                        KeyCode::Char('q') => {
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                            terminal.show_cursor()?;
-                            break;
-                        }
-                        KeyCode::Char('o') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if let Some(prev_app) = file_dialog.previous_app.take() {
-                                app = Some(prev_app);
-                            } else {
-                                file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+                    Event::Input(event) => {
+                        match event.code {
+                            KeyCode::Char('q') => {
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                terminal.show_cursor()?;
+                                break;
                             }
-                        }
-                        KeyCode::Esc => {
-                            if let Some(prev_app) = file_dialog.previous_app.take() {
-                                app = Some(prev_app);
-                            } else {
-                                file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+                            KeyCode::Char('o')
+                                if event.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                if let Some(prev_app) = file_dialog.previous_app.take() {
+                                    app = Some(prev_app);
+                                } else {
+                                    file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+                                }
                             }
-                        }
-                        KeyCode::Up => {
-                            file_dialog.on_up(event.modifiers.contains(KeyModifiers::SHIFT))
-                        }
-                        KeyCode::Down => {
-                            file_dialog.on_down(event.modifiers.contains(KeyModifiers::SHIFT))
-                        }
-                        KeyCode::Left => file_dialog.on_left()?,
-                        KeyCode::Right => file_dialog.on_right()?,
-                        KeyCode::Enter => {
-                            file_dialog.on_enter();
-                            if let Some(path) = &file_dialog.selection {
-                                match get_repo(path) {
-                                    Ok(repo) => {
-                                        if repo.is_shallow() {
-                                            file_dialog.set_error(format!("{} is a shallow clone. Shallow clones are not supported due to a missing feature in the underlying libgit2 library.", repo.path().parent().unwrap().display()));
-                                        } else {
-                                            let mut new_app = create_app(
-                                                repo,
-                                                &mut settings,
-                                                &app_settings,
-                                                model,
-                                                max_commits,
-                                            )?;
-                                            new_app.pipeline_load_limit = pipeline_load_limit;
-                                            new_app
-                                                .set_pipeline_channel(pipeline_request_tx.clone());
-                                            new_app.set_head_pipeline_channel(
-                                                head_pipeline_tx.clone(),
-                                            );
-                                            new_app.set_job_log_channel(job_log_request_tx.clone());
-                                            new_app.request_batch_pipelines();
-                                            app = Some(new_app);
+                            KeyCode::Esc => {
+                                if let Some(prev_app) = file_dialog.previous_app.take() {
+                                    app = Some(prev_app);
+                                } else {
+                                    file_dialog.set_error("No repository to return to.\nSelect a Git rrpository or quit with Q.".to_string())
+                                }
+                            }
+                            KeyCode::Up => {
+                                file_dialog.on_up(event.modifiers.contains(KeyModifiers::SHIFT))
+                            }
+                            KeyCode::Down => {
+                                file_dialog.on_down(event.modifiers.contains(KeyModifiers::SHIFT))
+                            }
+                            KeyCode::Left => file_dialog.on_left()?,
+                            KeyCode::Right => file_dialog.on_right()?,
+                            KeyCode::Enter => {
+                                file_dialog.on_enter();
+                                if let Some(path) = &file_dialog.selection {
+                                    match get_repo(path) {
+                                        Ok(repo) => {
+                                            if repo.is_shallow() {
+                                                file_dialog.set_error(format!("{} is a shallow clone. Shallow clones are not supported due to a missing feature in the underlying libgit2 library.", repo.path().parent().unwrap().display()));
+                                            } else {
+                                                let mut new_app = create_app(
+                                                    repo,
+                                                    &mut settings,
+                                                    &app_settings,
+                                                    model,
+                                                    max_commits,
+                                                )?;
+                                                new_app.pipeline_load_limit = pipeline_load_limit;
+                                                new_app.set_pipeline_channel(
+                                                    pipeline_request_tx.clone(),
+                                                );
+                                                new_app.set_head_pipeline_channel(
+                                                    head_pipeline_tx.clone(),
+                                                );
+                                                new_app.set_job_log_channel(
+                                                    job_log_request_tx.clone(),
+                                                );
+                                                new_app.request_batch_pipelines();
+                                                app = Some(new_app);
+                                            }
                                         }
-                                    }
-                                    Err(_) => {
-                                        file_dialog.on_right()?;
-                                    }
-                                };
+                                        Err(_) => {
+                                            file_dialog.on_right()?;
+                                        }
+                                    };
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
-                    },
+                        needs_redraw = true;
+                    }
+                    Event::Resize => {
+                        needs_redraw = true;
+                    }
                     Event::Update => {
                         let now = Instant::now();
                         if next_repo_refresh.get() <= now {

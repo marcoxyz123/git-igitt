@@ -68,7 +68,7 @@ fn sweep_color(
     total_chars: u16,
     tick: u8,
 ) -> Color {
-    let phase = (tick as f32 / 255.0) * 2.0;
+    let phase = (tick.wrapping_mul(8) as f32 / 255.0) * 2.0;
     let sweep_pos = if phase < 1.0 {
         phase * (total_chars as f32 + 2.0) - 1.0
     } else {
