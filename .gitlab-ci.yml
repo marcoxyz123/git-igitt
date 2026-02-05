@@ -100,11 +100,15 @@ build:macos:
     - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env" || true
     - export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
     - cargo --version
-    - cargo build --release --locked
-    - strip target/release/${PACKAGE_NAME}
+    - rustup target add x86_64-apple-darwin aarch64-apple-darwin
+    - cargo build --release --locked --target x86_64-apple-darwin
+    - cargo build --release --locked --target aarch64-apple-darwin
+    - strip target/x86_64-apple-darwin/release/${PACKAGE_NAME}
+    - strip target/aarch64-apple-darwin/release/${PACKAGE_NAME}
   artifacts:
     paths:
-      - target/release/${PACKAGE_NAME}
+      - target/x86_64-apple-darwin/release/${PACKAGE_NAME}
+      - target/aarch64-apple-darwin/release/${PACKAGE_NAME}
     expire_in: 1 week
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -171,29 +175,49 @@ package:macos:
       artifacts: true
   script:
     - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-    - ARCH=$(uname -m); if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
-    - echo "Building packages for macOS-${ARCH}"
     - mkdir -p dist
-    - cp target/release/${PACKAGE_NAME} dist/
-    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.tar.gz -C dist ${PACKAGE_NAME}
+    # Package arm64 (Apple Silicon)
+    - cp target/aarch64-apple-darwin/release/${PACKAGE_NAME} dist/${PACKAGE_NAME}
+    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz -C dist ${PACKAGE_NAME}
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.tar.gz \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.tar.gz"
-    - mkdir -p dist/payload/usr/local/bin
-    - cp target/release/${PACKAGE_NAME} dist/payload/usr/local/bin/
-    - chmod 755 dist/payload/usr/local/bin/${PACKAGE_NAME}
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz"
+    - mkdir -p dist/payload-arm64/usr/local/bin
+    - cp target/aarch64-apple-darwin/release/${PACKAGE_NAME} dist/payload-arm64/usr/local/bin/
+    - chmod 755 dist/payload-arm64/usr/local/bin/${PACKAGE_NAME}
     - |
       pkgbuild \
-        --root dist/payload \
+        --root dist/payload-arm64 \
         --identifier "sx.berger.${PACKAGE_NAME}" \
         --version "${VERSION}" \
         --install-location / \
-        dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.pkg
+        dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.pkg \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-${ARCH}.pkg"
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg"
+    # Package amd64 (Intel)
+    - cp target/x86_64-apple-darwin/release/${PACKAGE_NAME} dist/${PACKAGE_NAME}
+    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz -C dist ${PACKAGE_NAME}
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz"
+    - mkdir -p dist/payload-amd64/usr/local/bin
+    - cp target/x86_64-apple-darwin/release/${PACKAGE_NAME} dist/payload-amd64/usr/local/bin/
+    - chmod 755 dist/payload-amd64/usr/local/bin/${PACKAGE_NAME}
+    - |
+      pkgbuild \
+        --root dist/payload-amd64 \
+        --identifier "sx.berger.${PACKAGE_NAME}" \
+        --version "${VERSION}" \
+        --install-location / \
+        dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg
+    - |
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg"
   artifacts:
     paths:
       - dist/*.tar.gz
