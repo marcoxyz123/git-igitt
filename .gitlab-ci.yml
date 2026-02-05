@@ -17,19 +17,6 @@ variables:
       - .cargo/
       - target/
 
-# Extract version from Cargo.toml for proper semantic versioning
-.extract_version:
-  before_script:
-    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-    - echo "Package version: ${VERSION}"
-
-.extract_version_macos:
-  before_script:
-    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env" || true
-    - export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-    - echo "Package version: ${VERSION}"
-
 fmt:
   stage: lint
   image: rust:latest
@@ -147,7 +134,6 @@ package:linux-amd64:
   image: alpine:latest
   tags:
     - docker
-  extends: .extract_version
   needs:
     - job: build:linux-amd64
       artifacts: true
@@ -174,7 +160,6 @@ package:linux-amd64-musl:
   image: alpine:latest
   tags:
     - docker
-  extends: .extract_version
   needs:
     - job: build:linux-amd64-musl
       artifacts: true
@@ -200,7 +185,6 @@ package:macos-amd64:
   stage: package
   tags:
     - macOS
-  extends: .extract_version_macos
   needs:
     - job: build:macos-amd64
       artifacts: true
@@ -240,7 +224,6 @@ package:macos-arm64:
   stage: package
   tags:
     - macOS
-  extends: .extract_version_macos
   needs:
     - job: build:macos-arm64
       artifacts: true
