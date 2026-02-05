@@ -142,10 +142,10 @@ package:linux-amd64:
     - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz ${PACKAGE_NAME}
+    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz -C dist ${PACKAGE_NAME}
     - |
-      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz \
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz"
   artifacts:
     paths:
@@ -168,10 +168,10 @@ package:linux-amd64-musl:
     - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz ${PACKAGE_NAME}
+    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz -C dist ${PACKAGE_NAME}
     - |
-      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz \
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz"
   artifacts:
     paths:
@@ -192,10 +192,10 @@ package:macos-amd64:
     - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz ${PACKAGE_NAME}
+    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz -C dist ${PACKAGE_NAME}
     - |
-      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz \
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz"
     - mkdir -p dist/payload/usr/local/bin
     - cp target/release/${PACKAGE_NAME} dist/payload/usr/local/bin/
@@ -231,10 +231,10 @@ package:macos-arm64:
     - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz ${PACKAGE_NAME}
+    - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz -C dist ${PACKAGE_NAME}
     - |
-      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz \
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz"
     - mkdir -p dist/payload/usr/local/bin
     - cp target/release/${PACKAGE_NAME} dist/payload/usr/local/bin/
