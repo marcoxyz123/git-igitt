@@ -17,6 +17,19 @@ variables:
       - .cargo/
       - target/
 
+# Extract version from Cargo.toml for proper semantic versioning
+.extract_version:
+  before_script:
+    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    - echo "Package version: ${VERSION}"
+
+.extract_version_macos:
+  before_script:
+    - test -f "$HOME/.cargo/env" && source "$HOME/.cargo/env" || true
+    - export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    - echo "Package version: ${VERSION}"
+
 fmt:
   stage: lint
   image: rust:latest
@@ -134,18 +147,20 @@ package:linux-amd64:
   image: alpine:latest
   tags:
     - docker
+  extends: .extract_version
   needs:
     - job: build:linux-amd64
       artifacts: true
   script:
     - apk add --no-cache curl tar gzip
+    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-linux-amd64.tar.gz ${PACKAGE_NAME}
+    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz ${PACKAGE_NAME}
     - |
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-linux-amd64.tar.gz \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-linux-amd64.tar.gz"
+      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-linux-amd64.tar.gz"
   artifacts:
     paths:
       - dist/*.tar.gz
@@ -159,18 +174,20 @@ package:linux-amd64-musl:
   image: alpine:latest
   tags:
     - docker
+  extends: .extract_version
   needs:
     - job: build:linux-amd64-musl
       artifacts: true
   script:
     - apk add --no-cache curl tar gzip
+    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-linux-amd64-musl.tar.gz ${PACKAGE_NAME}
+    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz ${PACKAGE_NAME}
     - |
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-linux-amd64-musl.tar.gz \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-linux-amd64-musl.tar.gz"
+      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-linux-amd64-musl.tar.gz"
   artifacts:
     paths:
       - dist/*.tar.gz
@@ -183,32 +200,33 @@ package:macos-amd64:
   stage: package
   tags:
     - macOS
+  extends: .extract_version_macos
   needs:
     - job: build:macos-amd64
       artifacts: true
   script:
+    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.tar.gz ${PACKAGE_NAME}
+    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz ${PACKAGE_NAME}
     - |
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.tar.gz \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.tar.gz"
-    # Build .pkg installer (installs to /usr/local/bin)
-    - mkdir -p payload/usr/local/bin
-    - cp ${PACKAGE_NAME} payload/usr/local/bin/
-    - chmod 755 payload/usr/local/bin/${PACKAGE_NAME}
+      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-amd64.tar.gz"
+    - mkdir -p dist/payload/usr/local/bin
+    - cp target/release/${PACKAGE_NAME} dist/payload/usr/local/bin/
+    - chmod 755 dist/payload/usr/local/bin/${PACKAGE_NAME}
     - |
       pkgbuild \
-        --root payload \
+        --root dist/payload \
         --identifier "sx.berger.${PACKAGE_NAME}" \
-        --version "${CI_COMMIT_REF_SLUG}" \
+        --version "${VERSION}" \
         --install-location / \
-        ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.pkg
+        dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.pkg \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-amd64.pkg"
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-amd64.pkg"
   artifacts:
     paths:
       - dist/*.tar.gz
@@ -222,32 +240,33 @@ package:macos-arm64:
   stage: package
   tags:
     - macOS
+  extends: .extract_version_macos
   needs:
     - job: build:macos-arm64
       artifacts: true
   script:
+    - export VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     - mkdir -p dist
     - cp target/release/${PACKAGE_NAME} dist/
-    - cd dist && tar -czvf ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.tar.gz ${PACKAGE_NAME}
+    - cd dist && tar -czvf ${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz ${PACKAGE_NAME}
     - |
-      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.tar.gz \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.tar.gz"
-    # Build .pkg installer (installs to /usr/local/bin)
-    - mkdir -p payload/usr/local/bin
-    - cp ${PACKAGE_NAME} payload/usr/local/bin/
-    - chmod 755 payload/usr/local/bin/${PACKAGE_NAME}
+      cd dist && curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file ${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-arm64.tar.gz"
+    - mkdir -p dist/payload/usr/local/bin
+    - cp target/release/${PACKAGE_NAME} dist/payload/usr/local/bin/
+    - chmod 755 dist/payload/usr/local/bin/${PACKAGE_NAME}
     - |
       pkgbuild \
-        --root payload \
+        --root dist/payload \
         --identifier "sx.berger.${PACKAGE_NAME}" \
-        --version "${CI_COMMIT_REF_SLUG}" \
+        --version "${VERSION}" \
         --install-location / \
-        ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.pkg
+        dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg
     - |
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-           --upload-file ${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.pkg \
-           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_REF_SLUG}/${PACKAGE_NAME}-${CI_COMMIT_REF_SLUG}-macos-arm64.pkg"
+           --upload-file dist/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${VERSION}/${PACKAGE_NAME}-${VERSION}-macos-arm64.pkg"
   artifacts:
     paths:
       - dist/*.tar.gz
