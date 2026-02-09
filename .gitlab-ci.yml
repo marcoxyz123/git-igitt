@@ -1,6 +1,8 @@
 stages:
+  - preflight
   - lint
   - test
+  - security
   - build
   - package
 
@@ -16,6 +18,18 @@ variables:
     paths:
       - .cargo/
       - target/
+
+preflight:
+  stage: preflight
+  image: rust:latest
+  tags:
+    - docker
+  script:
+    - 'test -f Cargo.lock || { echo "ERROR: Cargo.lock missing - commit it to the repo"; exit 1; }'
+    - cargo verify-project
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
 
 fmt:
   stage: lint
@@ -51,6 +65,43 @@ test:
   extends: .rust_cache
   script:
     - cargo test --all --locked
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+cargo-audit:
+  stage: security
+  image: rust:latest
+  tags:
+    - docker
+  script:
+    - cargo install cargo-audit --locked
+    - >-
+      cargo audit
+      --ignore RUSTSEC-2024-0013
+      --ignore RUSTSEC-2026-0009
+      --ignore RUSTSEC-2024-0436
+      --ignore RUSTSEC-2024-0320
+      --ignore RUSTSEC-2024-0375
+      --ignore RUSTSEC-2025-0141
+      --ignore RUSTSEC-2021-0145
+      --ignore RUSTSEC-2026-0008
+      --ignore RUSTSEC-2026-0002
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+gitleaks:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  tags:
+    - docker
+  script:
+    - gitleaks detect --source . --verbose --redact --no-banner
+  allow_failure: false
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH

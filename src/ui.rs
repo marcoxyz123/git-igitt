@@ -633,18 +633,35 @@ fn draw_job_log(f: &mut Frame, target: Rect, app: &mut App) {
                 Span::raw("  "),
             ];
 
+            let dur_reserve: u16 = log_line
+                .duration
+                .as_ref()
+                .map(|d| d.len() as u16 + 1)
+                .unwrap_or(0);
+            let max_content: u16 = inner.width.saturating_sub(gutter_width + dur_reserve);
+
+            let mut content_len: u16 = 0;
             for (text, style) in &log_line.styled {
-                spans.push(Span::styled(text.clone(), *style));
+                let remaining = max_content.saturating_sub(content_len) as usize;
+                if remaining == 0 {
+                    break;
+                }
+                if text.len() <= remaining {
+                    spans.push(Span::styled(text.clone(), *style));
+                    content_len += text.len() as u16;
+                } else {
+                    let truncated: String = text.chars().take(remaining).collect();
+                    content_len += truncated.len() as u16;
+                    spans.push(Span::styled(truncated, *style));
+                    break;
+                }
             }
 
-            let content_len: u16 = log_line.styled.iter().map(|(t, _)| t.len() as u16).sum();
-
             if let Some(dur) = &log_line.duration {
-                let available = inner
-                    .width
-                    .saturating_sub(gutter_width + content_len + dur.len() as u16 + 1);
-                if available > 0 {
-                    spans.push(Span::raw(" ".repeat(available as usize)));
+                let used = gutter_width + content_len + dur.len() as u16 + 1;
+                let pad = inner.width.saturating_sub(used);
+                if pad > 0 {
+                    spans.push(Span::raw(" ".repeat(pad as usize)));
                 }
                 spans.push(Span::styled(dur.clone(), duration_style));
             } else {
