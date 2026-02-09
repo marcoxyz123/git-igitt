@@ -25,7 +25,7 @@ preflight:
   tags:
     - docker
   script:
-    - test -f Cargo.lock || (echo "ERROR: Cargo.lock missing — commit it to the repo" && exit 1)
+    - 'test -f Cargo.lock || { echo "ERROR: Cargo.lock missing - commit it to the repo"; exit 1; }'
     - cargo verify-project
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
