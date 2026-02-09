@@ -1,256 +1,66 @@
-# AGENTS.md - git-igitt
+# git-igitt+ — Interactive Git History TUI with CI/CD Pipeline Integration
 
-Interactive Git terminal application for browsing and visualizing Git history graphs.
+> Global standards from `~/.config/opencode/AGENTS.md` apply automatically.
 
-## Project Overview
+## Project Context
 
-- **Language**: Rust (Edition 2021)
-- **MSRV**: 1.83.0
-- **Type**: Terminal UI (TUI) application
-- **Key Dependencies**: `git2`, `ratatui`, `crossterm`, `git-graph`, `syntect`, `reqwest`
+- **Stack**: Rust 2021, MSRV 1.83.0, TUI (ratatui/crossterm), git2, syntect, reqwest
+- **Type**: Desktop CLI/TUI — no web server, no REST API
+- **Remotes**: `origin` (github/git-bahn), `gitlab` (gitlab.berger.sx/mac — primary CI), `fork` (github/marcoxyz123)
 
-## Build/Test/Lint Commands
+## Build Commands
 
-```bash
-# Build
-cargo build                    # Debug build
-cargo build --release          # Release build (optimized with LTO)
+| Task | Command |
+|------|---------|
+| Build | `cargo build --release` |
+| Lint | `cargo clippy --all --all-targets -- --deny warnings` |
+| Test | `cargo test --all` |
+| Format | `cargo fmt --all -- --check` |
 
-# Test
-cargo test --all               # Run all tests
-cargo test <test_name>         # Run single test by name
-cargo test --lib               # Run library tests only
-cargo test -- --nocapture      # Show test output
+## Commit Scopes
 
-# Lint (must pass in CI)
-cargo fmt --all -- --check     # Check formatting
-cargo clippy --all --all-targets -- --deny warnings  # Lint with strict warnings
+`app`, `ui`, `widgets`, `gitlab`, `util`, `theme`, `settings`, `ci`
 
-# Format
-cargo fmt --all                # Auto-format all code
+## Architecture
 
-# Run
-cargo run                      # Run the application
-cargo run -- --help            # Show CLI help
-cargo run -- --path /path/to/repo  # Open specific repo
-```
+- Entry: `main.rs` (CLI + event loop) → `app.rs` (state/logic) → `ui.rs` (rendering)
+- Widgets: `widgets/` (graph, commit, diff, files, branches, pipeline, list, models)
+- GitLab: `gitlab/` (API client + models), `gitlab_config.rs` (config dialog)
+- Error pattern: `Result<T, String>`, `.map_err(|e| e.to_string())?`
+- Builder pattern for widgets, `StatefulWidget` trait, Nord color theme
+- Imports: std → external → `crate::` (explicit, no globs)
 
-## Project Structure
+## Serena Activation (MANDATORY)
 
 ```
-src/
-  main.rs          # Entry point, CLI parsing, main event loop
-  lib.rs           # Library root - exports public modules
-  app.rs           # Application state and logic
-  settings.rs      # Configuration types
-  dialogs.rs       # File dialogs
-  ui.rs            # UI rendering
-  theme.rs         # Nord color palette constants
-  gitlab/          # GitLab API integration
-    mod.rs         # HTTP client, pipeline/job fetching, config
-    models.rs      # PipelineStatus, Stage, Job, PipelineDetails
-  widgets/         # TUI widget components
-    mod.rs         # Widget module exports
-    graph_view.rs  # Git graph visualization
-    commit_view.rs # Commit details view
-    diff_view.rs   # Diff display
-    files_view.rs  # File list
-    branches_view.rs # Branch list
-    list.rs        # Reusable list widget
-    models_view.rs # Branching model selection
-    pipeline_view.rs # GitLab pipeline stages, jobs, log viewer
-  util/            # Utility modules
-    mod.rs
-    format.rs      # Commit formatting
-    syntax_highlight.rs
-    ctrl_chars.rs  # ANSI escape code parsing → Nord color remapping
+mcp_serena_activate_project(project="git-igitt")
+mcp_serena_check_onboarding_performed()
+mcp_serena_list_memories()
+mcp_serena_read_memory("project-overview")
 ```
 
-## Code Style Guidelines
+<!-- WASPWAY-STANDARDS-START -->
+## WASPWAY Standards (auto-managed by /ww-init)
 
-### Formatting
-- Use `cargo fmt` defaults (no rustfmt.toml override)
-- 4-space indentation
-- Max line width: 100 characters (Rust default)
+### Security
+- No secrets in code (GitLab tokens via `.git-igitt.toml` gitignored or env), validate all input
+- Dependency audits: `cargo audit`, no `unsafe` without justification
 
-### Naming Conventions
-- Types/Traits: `CamelCase` (e.g., `ActiveView`, `DiffType`)
-- Functions/Methods: `snake_case` (e.g., `on_enter`, `reload_diff_files`)
-- Constants: `SCREAMING_SNAKE_CASE` (e.g., `REPO_CONFIG_FILE`, `CHECK_CHANGE_RATE`)
-- Modules: `snake_case` (e.g., `syntax_highlight`, `ctrl_chars`)
-
-### Imports
-- Group imports: std -> external crates -> internal modules
-- Use nested imports for same crate (e.g., `use tui::{backend::CrosstermBackend, Terminal}`)
-- Prefer explicit imports over glob imports
-- Example:
-```rust
-use std::path::PathBuf;
-use std::time::Duration;
-
-use git2::Repository;
-use tui::style::Style;
-
-use crate::app::App;
-use crate::widgets::list::StatefulList;
-```
-
-### Type Annotations
-- Use type aliases for complex types: `pub type CurrentBranches = Vec<(Option<String>, Option<Oid>)>`
-- Derive common traits: `#[derive(Default, Clone, PartialEq, Eq)]`
-- Use `#[derive(Default)]` for structs with sensible defaults
+### Testing
+- Bugfix = regression test, never delete/skip failing tests, new features need tests
+- 70/20/10 ratio (unit/integration/e2e), mock external only (GitLab API)
 
 ### Error Handling
-- Functions return `Result<T, String>` - errors mapped to strings
-- Use `.map_err(|err| err.message().to_string())?` for git2 errors
-- Use `.map_err(|err| err.to_string())?` for other error types
-- Avoid `unwrap()` in library code; prefer `?` operator
+- Retry with backoff for GitLab API calls, timeout all HTTP requests
+- Graceful degradation: pipeline panel works offline, git ops never crash terminal
 
-### Visibility
-- Use `pub(crate)` for internal-only public items
-- Keep module contents private by default
-- Export via `pub mod` in parent mod.rs
+### CI/CD
+- Pipeline: lint → test → build → package (`.gitlab-ci.yml` + `.github/workflows/`)
+- No manual skip of quality gates, `cargo audit` in CI, CHANGELOG.md with releases
 
-### Builder Pattern
-Widgets use builder pattern with method chaining:
-```rust
-impl<'a> CommitView<'a> {
-    pub fn block(mut self, block: Block<'a>) -> CommitView<'a> {
-        self.block = Some(block);
-        self
-    }
-    pub fn style(mut self, style: Style) -> CommitView<'a> {
-        self.style = style;
-        self
-    }
-}
-```
+### Documentation
+- All docs in `docs/` (Diataxis), README = hub (max 150 lines), Mermaid for diagrams
+- ADRs for architecture decisions, CHANGELOG in same PR as code
 
-### Pattern Matching
-- Use exhaustive matching; avoid catch-all `_` when possible
-- Prefer `if let` for single-variant matches
-- Use `match` for multi-variant handling
-
-### Comments & Documentation
-- Use `//` for inline comments
-- Minimal doc comments; focus on non-obvious behavior
-- TODO comments for planned features: `// TODO: implement search in diff panel`
-
-## Clippy Rules
-
-Clippy runs with `--deny warnings`. Key rules enforced:
-- No unused imports, variables, or code
-- No unnecessary clones or borrows
-- Use `#[allow(clippy::rule)]` sparingly and only with justification:
-```rust
-#[allow(clippy::needless_borrow)]
-textwrap::fill(text_line, &wrapping)
-```
-
-## Testing
-
-- Tests in same file with `#[cfg(test)]` module
-- Integration tests in `tests/` directory
-- Use `#[test]` attribute for test functions
-- Prefer `assert_eq!` with descriptive messages
-
-## Git Workflow
-
-### Remotes
-
-| Remote | URL | Purpose |
-|--------|-----|---------|
-| `origin` | `github.com/git-bahn/git-igitt` | Upstream (read-only for PRs) |
-| `gitlab` | `gitlab.berger.sx/mac/git-igitt` | Primary development remote (CI/CD) |
-| `fork` | `github.com/marcoxyz123/git-igitt` | GitHub fork |
-
-- **Push to `gitlab`** for all development work and CI pipelines
-- `master` tracks `origin/master`; push to `gitlab` separately
-
-### Branching Model (git-flow style)
-
-| Prefix | Purpose | Color (graph) |
-|--------|---------|---------------|
-| `master` | Stable mainline | bright_blue |
-| `feature/*` | New features | bright_magenta / bright_cyan |
-| `fix/*` | Bug fixes | bright_cyan |
-| `bugfix/*` / `hotfix/*` | Urgent fixes | bright_red |
-| `release/*` | Release prep | bright_green |
-
-### Branch Lifecycle
-
-```
-1. Create branch from master:
-   git checkout -b feature/my-feature master
-
-2. Work, commit, push to gitlab:
-   git push gitlab feature/my-feature
-
-3. When done, merge to master with --no-ff:
-   git checkout master
-   git merge --no-ff feature/my-feature -m "Merge branch 'feature/my-feature'"
-   git push gitlab master
-
-4. Delete the branch:
-   git branch -D feature/my-feature
-   git push gitlab --delete feature/my-feature
-```
-
-### Merge Rules (CRITICAL)
-
-- **ALWAYS use `--no-ff`** when merging branches into master
-- Never fast-forward — merge commits preserve branch topology in the graph
-- Merge commit message: `Merge branch '<branch-name>'`
-
-### Commit Messages
-
-Follow conventional commits style:
-- `feat:` new feature
-- `fix:` bug fix
-- `fix(ci):` CI/CD fix
-- Lowercase, imperative mood, concise (1-2 lines)
-
-### GitLab CI
-
-- CI runs on all branches (push)
-- Pipeline stages: `lint` → `test` → `build` → `package`
-- All checks must pass before merge:
-  - `cargo test --all`
-  - `cargo fmt --all -- --check`
-  - `cargo clippy --all --all-targets -- --deny warnings`
-- GitLab default branch: `master`
-- Pipeline token: stored in GitLab project variables
-
-## Key Patterns
-
-### State Management
-- Application state in `App` struct
-- View states (e.g., `GraphViewState`, `CommitViewState`) manage UI state
-- Use `Option<T>` for nullable/optional state
-
-### Event Handling
-- Keyboard events processed in main event loop
-- Methods like `on_up()`, `on_down()`, `on_enter()` return `Result<bool, String>`
-- Boolean return indicates whether UI reload is needed
-
-### TUI Widgets
-- Implement `StatefulWidget` for stateful components
-- Implement `Widget` as wrapper around `StatefulWidget::render`
-- Use `Block` for borders and titles
-
-## Common Gotchas
-
-1. **libgit2 limitations**: No shallow clone support
-2. **Terminal state**: Always restore terminal on panic (see `chain_panic_hook()`)
-3. **Syntax highlighting**: Can be slow for large files
-4. **Git2 errors**: Always map to String for consistency
-
-## Dependencies Worth Knowing
-
-- `git2`: Rust bindings for libgit2
-- `ratatui`: Terminal UI framework (successor to tui-rs)
-- `crossterm`: Cross-platform terminal manipulation
-- `git-graph`: Git graph visualization library (sister project)
-- `syntect`: Syntax highlighting
-- `clap`: CLI argument parsing
-- `reqwest`: HTTP client for GitLab API
+Full standards: https://gitlab.berger.sx/ai/OPENCODE
+<!-- WASPWAY-STANDARDS-END -->
