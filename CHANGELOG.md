@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-09
+
+### Added
+
+- WASPWAY CI/CD pipeline standards with preflight validation, security scanning (cargo-audit + gitleaks), and enforced stage ordering
+- Pipeline monitoring GIF to README documentation
+
+### Fixed
+
+- Job log panel now truncates long content lines that previously overflowed the panel boundary, causing duration text to be pushed off-screen
+
+### Changed
+
+- Applied WASPWAY coding standards to project configuration and documentation
+
+
 ## [0.2.0] - 2025-02-03
 
 ### Added
